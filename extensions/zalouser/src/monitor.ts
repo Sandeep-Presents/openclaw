@@ -43,6 +43,7 @@ import {
 } from "./group-policy.js";
 import { createZalouserIngressMonitor, type ZalouserIngressLifecycle } from "./ingress.js";
 import { formatZalouserMessageSidFull, resolveZalouserMessageSid } from "./message-sid.js";
+import { prepareZalouserReplyText } from "./reply-text.js";
 import { getZalouserRuntime } from "./runtime.js";
 import { sendMessageZalouser } from "./send.js";
 import { resolveZalouserDmSessionScope } from "./session-scope.js";
@@ -587,6 +588,12 @@ async function processMessage(
     },
   };
 
+  const markdownTableMode = core.channel.text.resolveMarkdownTableMode({
+    cfg: config,
+    channel: "zalouser",
+    accountId: account.accountId,
+  });
+
   await core.channel.inbound.dispatch({
     channel: "zalouser",
     accountId: account.accountId,
@@ -600,14 +607,7 @@ async function processMessage(
         }
         return {
           ...payload,
-          text: core.channel.text.convertMarkdownTables(
-            payload.text,
-            core.channel.text.resolveMarkdownTableMode({
-              cfg: config,
-              channel: "zalouser",
-              accountId: account.accountId,
-            }),
-          ),
+          text: prepareZalouserReplyText(payload.text, markdownTableMode),
         };
       },
       durable: () => ({
