@@ -69,6 +69,7 @@ import {
   editMessageTelegram,
   getTelegramAllowedReactions,
   reactMessageTelegram,
+  sendDiceTelegram,
   sendPollTelegram,
   sendStickerTelegram,
 } from "./send.js";
@@ -93,6 +94,8 @@ const TELEGRAM_ACTION_ALIASES = {
   read: "read",
   searchSticker: "searchSticker",
   send: "sendMessage",
+  dice: "sendDice",
+  sendDice: "sendDice",
   sendMessage: "sendMessage",
   sendSticker: "sendSticker",
   sticker: "sendSticker",
@@ -758,6 +761,41 @@ export async function handleTelegramAction(
       messageId: result.messageId,
       chatId: result.chatId,
       ...buildTelegramControlDegradation(droppedControls, true),
+    });
+  }
+
+  if (action === "sendDice") {
+    if (!isActionEnabled("sendMessage")) {
+      throw new Error("Telegram sendMessage is disabled.");
+    }
+    const to =
+      readStringParam(params, "to") ?? readStringParam(params, "target", { required: true });
+    const emoji = readStringParam(params, "diceEmoji");
+    const replyToMessageId = readTelegramReplyToMessageId(params);
+    const messageThreadId = readTelegramThreadId(params);
+    const token = resolveTelegramToken(cfg, { accountId }).token;
+    if (!token) {
+      throw new Error(
+        "Telegram bot token missing. Set TELEGRAM_BOT_TOKEN or channels.telegram.botToken.",
+      );
+    }
+    const result = await sendDiceTelegram(to, emoji ?? undefined, {
+      cfg,
+      token,
+      accountId: accountId ?? undefined,
+      replyToMessageId: replyToMessageId ?? undefined,
+      messageThreadId: messageThreadId ?? undefined,
+      gatewayClientScopes: options?.gatewayClientScopes,
+      onPlatformSendDispatch: options?.onPlatformSendDispatch,
+      assertPlatformSendAuthorized: options?.assertDirectAdapterHandoff,
+    });
+    notifyVisibleOutboundSuccess(to, messageThreadId);
+    return jsonResult({
+      ok: true,
+      messageId: result.messageId,
+      chatId: result.chatId,
+      emoji: result.emoji,
+      value: result.value,
     });
   }
 

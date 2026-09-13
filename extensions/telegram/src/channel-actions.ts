@@ -55,6 +55,7 @@ async function handleTelegramRuntimeAction(
 
 const TELEGRAM_MESSAGE_ACTION_MAP = {
   delete: "deleteMessage",
+  dice: "sendDice",
   edit: "editMessage",
   "emoji-list": "emoji-list",
   poll: "poll",
@@ -71,6 +72,7 @@ const TELEGRAM_TOOL_DELIVERY_ACTIONS = new Set([
   "createForumTopic",
   "delete",
   "deleteMessage",
+  "dice",
   "edit",
   "editForumTopic",
   "editMessage",
@@ -78,6 +80,7 @@ const TELEGRAM_TOOL_DELIVERY_ACTIONS = new Set([
   "react",
   "send",
   "sendMessage",
+  "sendDice",
   "sendSticker",
   "sticker",
   "topic-create",
@@ -166,7 +169,9 @@ function describeTelegramMessageTool({
   const reactionsEnabled = discovery.isEnabled("reactions");
   const actions: ChannelMessageActionName[] = [
     "read",
-    ...(sendEnabled ? ["send" as const] : []),
+    // A roll is an ordinary outbound message to a chat the bot may already post in, so dice
+    // rides the send gate instead of a dedicated toggle.
+    ...(sendEnabled ? (["send", "dice"] as const) : []),
     ...(discovery.pollEnabled ? ["poll" as const] : []),
     ...(reactionsEnabled ? (["react", "emoji-list"] as const) : []),
     ...(discovery.isEnabled("deleteMessage") ? ["delete" as const] : []),
