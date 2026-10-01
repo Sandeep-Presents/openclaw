@@ -217,7 +217,10 @@ export type ReplyDispatcherWithTypingOptions = Omit<ReplyDispatcherOptions, "onI
 
 type ReplyDispatcherWithTypingResult = {
   dispatcher: ReturnType<typeof createReplyDispatcher>;
-  replyOptions: Pick<GetReplyOptions, "onReplyStart" | "onTypingController" | "onTypingCleanup">;
+  replyOptions: Pick<
+    GetReplyOptions,
+    "onReplyStart" | "onTypingController" | "onTypingCleanup" | "onTypingHandoff"
+  >;
   markDispatchIdle: () => void;
   /** Signal that the model run is complete so the typing controller can stop. */
   markRunComplete: () => void;
@@ -689,29 +692,6 @@ export function createReplyDispatcher(
   return dispatcher;
 }
 
-export async function waitForReplyDispatcherIdle(
-  dispatcher: Pick<ReplyDispatcher, "waitForIdle">,
-  abortSignal?: AbortSignal,
-): Promise<ReplyDispatchReceipt | undefined> {
-  if (!abortSignal) {
-    return (await dispatcher.waitForIdle()) || undefined;
-  }
-  if (abortSignal.aborted) {
-    return undefined;
-  }
-  let removeAbortListener: (() => void) | undefined;
-  const aborted = new Promise<undefined>((resolve) => {
-    const onAbort = () => resolve(undefined);
-    abortSignal.addEventListener("abort", onAbort, { once: true });
-    removeAbortListener = () => abortSignal.removeEventListener("abort", onAbort);
-  });
-  try {
-    return (await Promise.race([dispatcher.waitForIdle(), aborted])) || undefined;
-  } finally {
-    removeAbortListener?.();
-  }
-}
-
 export function createReplyDispatcherWithTyping(
   options: ReplyDispatcherWithTypingOptions,
 ): ReplyDispatcherWithTypingResult {
@@ -728,13 +708,16 @@ export function createReplyDispatcherWithTyping(
   const resolvedOnIdle = onIdle ?? typingCallbacks?.onIdle;
   const resolvedOnCleanup = onCleanup ?? typingCallbacks?.onCleanup;
   let typingController: TypingController | undefined;
+  let typingHandedOff = false;
   const dispatcher = createReplyDispatcher({
     ...dispatcherOptions,
     onIdle: async () => {
-      typingController?.markDispatchIdle();
-      const idle = resolvedOnIdle?.();
-      if (idle) {
-        await Promise.resolve(idle);
+      if (!typingHandedOff) {
+        typingController?.markDispatchIdle();
+        const idle = resolvedOnIdle?.();
+        if (idle) {
+          await Promise.resolve(idle);
+        }
       }
       await onSettled?.();
     },
@@ -748,13 +731,21 @@ export function createReplyDispatcherWithTyping(
       onTypingController: (typing) => {
         typingController = typing;
       },
+      onTypingHandoff: () => {
+        typingHandedOff = true;
+      },
     },
     markDispatchIdle: () => {
+      if (typingHandedOff) {
+        return;
+      }
       typingController?.markDispatchIdle();
       resolvedOnIdle?.();
     },
     markRunComplete: () => {
-      typingController?.markRunComplete();
+      if (!typingHandedOff) {
+        typingController?.markRunComplete();
+      }
     },
   };
 }
