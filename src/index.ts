@@ -11,7 +11,6 @@ import {
   configureGatewayStartupTraceConsoleFormatting,
   createGatewayDispatchStartupTrace,
 } from "./cli/startup-trace.js";
-import { tryHandleRootVersionFastPath } from "./entry.version-fast-path.js";
 import { isMainModule } from "./infra/is-main.js";
 
 const isMain = isMainModule({
@@ -39,9 +38,6 @@ if (
     );
   }
 }
-
-const handledRootVersion =
-  isMain && !handledAdmission && tryHandleRootVersionFastPath(process.argv);
 
 type LegacyCliDeps = {
   runCli: (
@@ -97,6 +93,10 @@ export async function runLegacyCliEntry(
   await runCli(argv, options);
 }
 
+const handledRootVersion =
+  isMain &&
+  !handledAdmission &&
+  (await import("./entry.version-fast-path.js")).tryHandleRootVersionFastPath(process.argv);
 if (!isMain) {
   ({
     applyTemplate,
@@ -126,7 +126,7 @@ if (isMain && !handledRootVersion && !handledAdmission) {
     { isJsonOutputModeActive },
     { runCliWithExitFinalization },
     { withCliProcessScope },
-    { installDistEsmResolveFastPath: installFastPath },
+    { installDistEsmResolveFastPath },
     { formatUncaughtError },
     { runFatalErrorHooks },
     {
@@ -144,7 +144,7 @@ if (isMain && !handledRootVersion && !handledAdmission) {
     import("./infra/fatal-error-hooks.js"),
     import("./infra/unhandled-rejections.js"),
   ]);
-  installFastPath(import.meta.url);
+  installDistEsmResolveFastPath(import.meta.url);
 
   const { defaultRuntime, restoreRuntimeTerminalState } = await import("./runtime.js");
 
