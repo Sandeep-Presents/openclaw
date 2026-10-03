@@ -17,6 +17,7 @@ import { clearSessionLifecycleQueues } from "./queue/cleanup.js";
 import {
   clearReplyRunForResetBySessionId,
   resolveActiveReplyOperationForSessionId,
+  type ReplyOperation,
 } from "./reply-run-registry.js";
 
 export class SessionResetCleanupError extends Error {}
@@ -98,6 +99,7 @@ export function clearSessionResetRuntimeState(
     agentId: string;
     sessionKey: string;
     activeReplySessionId?: string;
+    preserveReplyRun?: ReplyOperation;
     assertCurrent: () => void;
   },
 ): void {
@@ -135,7 +137,7 @@ export function clearSessionResetRuntimeState(
           agentSessionKeysMatchByRequestKey(operation.key, key),
       )
     ) {
-      clearReplyRunForResetBySessionId(opts.activeReplySessionId);
+      clearReplyRunForResetBySessionId(opts.activeReplySessionId, opts.preserveReplyRun);
     }
   }
 }
