@@ -88,6 +88,7 @@ import {
   handleSessionStateSessionDeleted,
   handleSessionStateSessionReset,
 } from "../sessions/session-state-events.js";
+import { removeSessionWorktree } from "../sessions/session-worktree-lifecycle.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { getOrCreatePromise } from "../shared/lazy-promise.js";
 import { authorizeGatewaySessionCreation, resolveCreatorSandbox } from "./operator-role-policy.js";
@@ -1018,6 +1019,11 @@ export async function performGatewaySessionReset(params: {
           return deleted;
         }
         await handleSessionStateSessionDeleted(target.canonicalKey, agentId);
+        await removeSessionWorktree({
+          id: normalizeOptionalString(entry.worktree?.id),
+          sessionKey: target.canonicalKey,
+          reason: "session-reset",
+        });
         notifyGatewaySessionReset(target.canonicalKey, target.agentId);
         emitGatewaySessionEndPluginHook({
           cfg,
