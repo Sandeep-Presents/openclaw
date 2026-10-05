@@ -233,8 +233,8 @@ describe("Git backup command agent selection", () => {
   });
 
   it("resolves every current agent preferring its canonical session database", async () => {
-    const mainAgentDir = path.resolve("/tmp/external-main");
-    const opsAgentDir = path.resolve("/tmp/external-ops");
+    const mainAgentDir = path.join(state.root, "external-main");
+    const opsAgentDir = path.join(state.root, "external-ops");
     mocks.getRuntimeConfig.mockReturnValue({
       agents: {
         entries: {
