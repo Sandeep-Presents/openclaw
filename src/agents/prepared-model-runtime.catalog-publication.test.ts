@@ -74,7 +74,7 @@ function catalog(entry: ModelCatalogEntry | undefined = model): ModelCatalogSnap
 async function setup(preparedMap = false, profile?: AuthProfileCredential) {
   const config: OpenClawConfig = {
     agents: {
-      list: [{ id: "default", default: true }],
+      entries: { default: {} },
       defaults: { model: "custom/synthetic-model" },
     },
   };
@@ -542,12 +542,15 @@ describe("catalog publication session rows", () => {
       expect(rows.dirtyRowCount).toBe(0);
       expect(readCatalog).toHaveBeenCalledTimes(catalogReads);
       expect(events.mock.calls.map(([event]) => event)).toEqual([
+        { phase: "catalog-status", modelFactsChanged: false },
         { phase: "catalog-published", modelFactsChanged: false, refreshStatusChanged: true },
+        { phase: "catalog-status", modelFactsChanged: false },
         {
           phase: "catalog-failed",
           error: expect.objectContaining({ message: "synthetic failure" }),
           modelFactsChanged: false,
         },
+        { phase: "catalog-status", modelFactsChanged: false },
         { phase: "catalog-published", modelFactsChanged: false, refreshStatusChanged: true },
       ]);
     } finally {
