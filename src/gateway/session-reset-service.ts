@@ -8,6 +8,7 @@ import {
   ErrorCodes,
   errorShape,
   missingScopeErrorShape,
+  type PreservedSessionWorktree,
 } from "../../packages/gateway-protocol/src/index.js";
 import { sanitizeForLog } from "../../packages/terminal-core/src/ansi.js";
 import { tryPrepareFreshManagerRuntimeSession } from "../acp/control-plane/manager.runtime-resume-state.js";
@@ -545,6 +546,7 @@ export async function performGatewaySessionReset(params: {
       storePath: string;
       incognitoDeleted: true;
       deletedSessionId?: string;
+      worktreePreserved?: PreservedSessionWorktree;
     }
   | { ok: false; error: ReturnType<typeof errorShape> }
 > {
@@ -1019,7 +1021,7 @@ export async function performGatewaySessionReset(params: {
           return deleted;
         }
         await handleSessionStateSessionDeleted(target.canonicalKey, agentId);
-        await removeSessionWorktree({
+        const worktreePreserved = await removeSessionWorktree({
           id: normalizeOptionalString(entry.worktree?.id),
           sessionKey: target.canonicalKey,
           reason: "session-reset",
@@ -1047,6 +1049,7 @@ export async function performGatewaySessionReset(params: {
           storePath,
           incognitoDeleted: true,
           deletedSessionId: deleted.value.deletedSessionId,
+          ...(worktreePreserved ? { worktreePreserved } : {}),
         };
       }
 
