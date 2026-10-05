@@ -347,15 +347,16 @@ export async function createFullModelCatalogAccess(
       const retained = published.inventory;
       const retainedAuth =
         getPreparedModelFullCatalogAuth(published.catalog ?? staticCatalog) ?? currentAuth;
-      // Only a provider whose discovery completed observed its credential source:
-      // ready and auth-rejected outcomes re-read it in the worker, so an auth
-      // omission there is a removal, not a pass-over. An unavailable outcome never
-      // observed the source, so its omission must keep the prior auth until a
-      // refresh observes that provider again.
+      // The worker re-reads the durable credential source for the whole requested
+      // scope before any discovery runs, so an auth omission in its returned store
+      // is a removal observed at that read — regardless of the per-provider
+      // discovery outcome. Discovery status speaks to model discovery, not to the
+      // credential observation, so an unavailable outcome must not resurrect a
+      // removed credential into the published catalog.
       const observedRemovals = new Set(
-        (workerCatalog.providerOutcomes ?? [])
-          .filter((outcome) => outcome.status !== "unavailable")
-          .map((outcome) => normalizeProvider(outcome.provider)),
+        (workerCatalog.providerOutcomes ?? []).map((outcome) =>
+          normalizeProvider(outcome.provider),
+        ),
       );
       const auth = providerIds
         ? replacePreparedModelCatalogAuth(

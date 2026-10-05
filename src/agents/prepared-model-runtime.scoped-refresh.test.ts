@@ -982,7 +982,7 @@ describe("prepared model runtime scoped refresh", () => {
     ).toMatchObject({ agentId: "pro", config: nextConfig });
   });
 
-  it("keeps a failed scoped provider's prior auth, still drops an observed logout omission", async () => {
+  it("drops a removed scoped provider's auth regardless of discovery outcome", async () => {
     const profileId = "provider-a:default";
     const profile = { type: "api_key" as const, provider: "provider-a", key: "fixture-key" };
     mocks.preparedAuthStore = { version: 1, profiles: { [profileId]: profile } };
@@ -1015,13 +1015,52 @@ describe("prepared model runtime scoped refresh", () => {
       });
       return getPreparedModelFullCatalogAuth(published);
     };
-    // A failed scoped discovery never observed the credential source, so its auth
-    // omission is not a logout: the prior entry survives until an observed refresh.
-    const retainedAuth = (await publishedAuth("unavailable"))!;
-    expect(retainedAuth.credentials?.["provider-a"]).toBeDefined();
-    // A ready scoped refresh re-read the source and found nothing: the omission is
-    // an observed removal, so the prior entry must go.
+    // The worker re-read the credential source for the whole scope before
+    // discovery ran, so an unavailable outcome does not soften the omission
+    // into a pass-over: the removed entry must go either way.
+    const unavailableAuth = (await publishedAuth("unavailable"))!;
+    expect(unavailableAuth.credentials?.["provider-a"]).toBeUndefined();
     const observedAuth = (await publishedAuth("ready"))!;
     expect(observedAuth.credentials?.["provider-a"]).toBeUndefined();
+  });
+
+  it("keeps a scoped provider's fresh auth when discovery is unavailable but the credential remains", async () => {
+    const profileId = "provider-a:default";
+    const profile = { type: "api_key" as const, provider: "provider-a", key: "fixture-key" };
+    mocks.preparedAuthStore = { version: 1, profiles: { [profileId]: profile } };
+    const config: OpenClawConfig = { agents: { entries: { pro: {} } } };
+    const learned = { provider: "provider-a", id: "learned", name: "Learned" };
+    const ready = makeCatalog([learned], {
+      providerOutcomes: [{ provider: "provider-a", profileId, status: "ready" }],
+    });
+    setPreparedModelFullCatalogAuth(
+      ready,
+      catalogAuth(
+        "provider-a",
+        { version: 1, profiles: { [profileId]: profile } },
+        { "provider-a": { type: "api_key", key: "fixture-key" } },
+      ),
+    );
+    const owner = await prepareCatalogOwner(config, ready);
+    // The refreshed store still carries the credential; only model discovery
+    // failed. The fresh value must be published, not dropped with the models.
+    const reply = makeCatalog([learned], {
+      providerOutcomes: [{ provider: "provider-a", profileId, status: "unavailable" }],
+    });
+    setPreparedModelFullCatalogAuth(
+      reply,
+      catalogAuth(
+        "provider-a",
+        { version: 1, profiles: { [profileId]: profile } },
+        { "provider-a": { type: "api_key", key: "fixture-key" } },
+      ),
+    );
+    mocks.runPreparedModelCatalogWorker.mockImplementation(async () => reply);
+    const published = await owner.loadFullModelCatalog!({
+      refresh: true,
+      providerIds: ["provider-a"],
+    });
+    const auth = getPreparedModelFullCatalogAuth(published)!;
+    expect(auth.credentials?.["provider-a"]).toBeDefined();
   });
 });
