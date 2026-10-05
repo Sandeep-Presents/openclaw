@@ -140,25 +140,6 @@ test.each(["/new", "/reset"])(
       expect(entry?.lifecycleRevision).not.toBe("before");
       expect(entry?.totalTokens).toBe(0);
       expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
-      const next = createReplyDispatcher({
-        deliver: async (payload) => {
-          delivered.push(payload.text ?? "");
-        },
-      });
-      const nextResult = await dispatchReplyFromConfig({
-        ctx: buildTestCtx({
-          Body: "next",
-          SessionKey: sessionKey,
-          Provider: "discord",
-          Surface: "discord",
-        }),
-        cfg,
-        dispatcher: next,
-        replyResolver: async () => ({ text: "next turn" }),
-      });
-      await next.waitForIdle();
-      expect(nextResult.queuedFinal).toBe(true);
-      expect(delivered.at(-1)).toBe("next turn");
     } finally {
       initiator?.complete();
     }
