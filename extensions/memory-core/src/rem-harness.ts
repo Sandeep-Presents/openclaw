@@ -157,7 +157,7 @@ export async function previewRemHarness(
   }
 
   const candidateLimit = resolveOptionalIntegerOption(params.candidateLimit, { min: 1 });
-  const rankedCandidates = await rankShortTermPromotionCandidates({
+  const { candidates: rankedCandidates } = await rankShortTermPromotionCandidates({
     workspaceDir: params.workspaceDir,
     minScore: 0,
     minRecallCount: 0,

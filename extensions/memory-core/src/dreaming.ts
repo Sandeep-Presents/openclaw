@@ -25,7 +25,10 @@ import {
   includesSystemEventToken,
 } from "./dreaming-shared.js";
 import { resolveMemoryPromotionFileMaxChars } from "./memory-budget.js";
-import type { PromotionRejectionCategory } from "./short-term-promotion-types.js";
+import {
+  countPromotionRejections,
+  formatZeroPromotionReasons,
+} from "./short-term-promotion-exclusions.js";
 
 const RUNTIME_CRON_RECONCILE_INTERVAL_MS = 60_000;
 const HEARTBEAT_ISOLATED_SESSION_SUFFIX = ":heartbeat";
@@ -210,7 +213,7 @@ async function runShortTermDreamingPromotion(params: {
         );
         reportLines.push(`- Repaired recall artifacts: ${formatRepairSummary(repair)}.`);
       }
-      const candidates = await rankShortTermPromotionCandidates({
+      const ranking = await rankShortTermPromotionCandidates({
         workspaceDir,
         limit: params.config.limit,
         minScore: params.config.minScore,
@@ -220,6 +223,7 @@ async function runShortTermDreamingPromotion(params: {
         maxAgeDays: params.config.maxAgeDays,
         nowMs: sweepNowMs,
       });
+      const { candidates } = ranking;
       totalCandidates += candidates.length;
       reportLines.push(`- Ranked ${candidates.length} candidate(s) for durable promotion.`);
       if (params.config.verboseLogging) {
@@ -262,17 +266,20 @@ async function runShortTermDreamingPromotion(params: {
       });
       totalApplied += applied.applied;
       reportLines.push(`- Promoted ${applied.applied} candidate(s) into MEMORY.md.`);
-      if (applied.rejectedCandidates.length > 0) {
-        const rejectionCounts = new Map<PromotionRejectionCategory, number>();
-        for (const { category } of applied.rejectedCandidates) {
-          rejectionCounts.set(category, (rejectionCounts.get(category) ?? 0) + 1);
-        }
-        const summary = [...rejectionCounts]
-          .toSorted(([left], [right]) => left.localeCompare(right))
-          .map(([category, count]) => `${category}: ${count}`)
+      const rejectionCounts = countPromotionRejections(applied.rejectedCandidates);
+      if (rejectionCounts.length > 0) {
+        const summary = rejectionCounts
+          .toSorted((left, right) => left.category.localeCompare(right.category))
+          .map(({ category, count }) => `${category}: ${count}`)
           .join(", ");
         reportLines.push(
           `- Not promoted: ${applied.rejectedCandidates.length} candidate(s) (${summary}).`,
+        );
+      }
+      if (applied.applied === 0) {
+        const reasons = formatZeroPromotionReasons(ranking.exclusions, applied.rejectedCandidates);
+        params.logger.info(
+          `memory-core: dreaming promoted 0 of ${ranking.considered} [workspace=${workspaceDir}]${reasons ? `: ${reasons}` : ""}.`,
         );
       }
       if (params.config.verboseLogging) {

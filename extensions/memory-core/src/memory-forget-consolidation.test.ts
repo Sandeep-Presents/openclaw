@@ -153,7 +153,7 @@ describe("memory forget", () => {
         ],
       });
       const thresholds = { minScore: 0, minRecallCount: 0, minUniqueQueries: 0 };
-      const candidates = await rankShortTermPromotionCandidates({
+      const { candidates } = await rankShortTermPromotionCandidates({
         workspaceDir,
         nowMs,
         ...thresholds,
@@ -518,7 +518,7 @@ describe("memory forget", () => {
       ],
     });
     const thresholds = { minScore: 0, minRecallCount: 0, minUniqueQueries: 0 };
-    const candidates = await rankShortTermPromotionCandidates({
+    const { candidates } = await rankShortTermPromotionCandidates({
       workspaceDir,
       nowMs,
       ...thresholds,
