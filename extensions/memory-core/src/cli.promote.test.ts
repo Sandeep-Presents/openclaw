@@ -23,6 +23,7 @@ import {
 } from "./test-helpers.js";
 
 const getMemorySearchManager = vi.hoisted(() => vi.fn());
+const getRuntimeConfig = vi.hoisted(() => vi.fn((): object => ({})));
 
 vi.mock("./memory/index.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./memory/index.js")>()),
@@ -40,7 +41,7 @@ vi.mock("openclaw/plugin-sdk/memory-core-host-runtime-core", async (importOrigin
     await importOriginal<typeof import("openclaw/plugin-sdk/memory-core-host-runtime-core")>();
   return {
     ...original,
-    getRuntimeConfig: () => ({}),
+    getRuntimeConfig,
     resolveDefaultAgentId: () => "main",
     listMemoryArtifactProvenance: vi.fn(original.listMemoryArtifactProvenance),
   };
@@ -61,6 +62,7 @@ beforeAll(async () => {
 beforeEach(() => {
   process.exitCode = 0;
   getMemorySearchManager.mockReset();
+  getRuntimeConfig.mockReset().mockReturnValue({});
 });
 
 afterEach(() => {
@@ -173,6 +175,29 @@ describe("memory promote diagnostics", () => {
     expectLogged(log, "Excluded 2 of 2: origin 1, query threshold 1");
     expectLogged(log, "fewer than 3 distinct queries");
     expectLogged(log, "see: openclaw memory promote-explain");
+  });
+
+  it("keeps the selected agent in the suggested explain command", async () => {
+    const workspaceDir = await createWorkspace();
+    await recordIngestionOnlyAndUntrustedRecalls(workspaceDir);
+    getRuntimeConfig.mockReturnValue({
+      agents: { ownership: "explicit", entries: { main: {}, ops: {} } },
+    });
+    mockWorkspaceManager(workspaceDir);
+
+    const log = spyRuntimeLogs(defaultRuntime);
+    await runMemoryCli([
+      "promote",
+      "--agent",
+      "ops",
+      "--min-score",
+      "0",
+      "--min-recall-count",
+      "0",
+    ]);
+
+    expectLogged(log, "Agent: ops");
+    expectLogged(log, "--agent ops");
   });
 
   it("reports exclusions and overridden thresholds in promote json", async () => {

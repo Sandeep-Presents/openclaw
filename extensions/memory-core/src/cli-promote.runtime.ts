@@ -62,6 +62,7 @@ const MEMORY_ARCHITECTURE_DOCS = formatDocsLink(
 );
 
 function formatPromotionExclusionLines(params: {
+  agentId: string;
   ranking: RankShortTermPromotionResult;
   exclusionCounts: PromotionExclusionCount[];
   minUniqueQueries: number;
@@ -89,7 +90,10 @@ function formatPromotionExclusionLines(params: {
     }
     const sampleKey = top[0]?.sampleKeys[0];
     if (sampleKey) {
-      lines.push(muted(`see: openclaw memory promote-explain ${sampleKey}`));
+      // Without --agent, promote-explain resolves the default agent's workspace.
+      lines.push(
+        muted(`see: openclaw memory promote-explain ${sampleKey} --agent ${params.agentId}`),
+      );
     }
     lines.push(`${muted("Docs:")} ${MEMORY_ARCHITECTURE_DOCS}`);
   }
@@ -244,6 +248,7 @@ export async function runMemoryPromote(
       }
       const identityLine = `${muted("Agent:")} ${agentId} · ${muted("Workspace:")} ${shortenHomePath(workspaceDir)} · ${muted("Recall store:")} ${storePath}`;
       const exclusionLines = formatPromotionExclusionLines({
+        agentId,
         ranking,
         exclusionCounts,
         minUniqueQueries: thresholds.minUniqueQueries,
