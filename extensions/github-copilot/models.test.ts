@@ -192,6 +192,46 @@ describe("fetchCopilotUsage", () => {
     expect(canceled).toBe(true);
   });
 
+  it("returns a usage error without awaiting a hanging loopback body cancel", async () => {
+    const { createServer } = await import("node:http");
+    let socketClosed = false;
+    const server = createServer((req, res) => {
+      res.writeHead(401, { "content-type": "application/json", connection: "close" });
+      res.write('{"message":"unauthorized"');
+      req.socket?.once("close", () => {
+        socketClosed = true;
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("expected TCP address");
+      }
+      const started = Date.now();
+      const loopbackFetch: typeof fetch = async () =>
+        fetch(`http://127.0.0.1:${address.port}/copilot_internal/user`);
+      const result = await fetchCopilotUsage("token", 5000, loopbackFetch);
+      const elapsed = Date.now() - started;
+      const deadline = Date.now() + 2000;
+      while (!socketClosed && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      console.log(
+        `[copilot usage HTTP transport proof] returned=true error=${Boolean(result.error)} socket_closed=${socketClosed} elapsed_ms=${elapsed}`,
+      );
+      expect(result.error).toBeTruthy();
+      expect(result.windows).toEqual([]);
+      expect(elapsed).toBeLessThan(500);
+      expect(socketClosed).toBe(true);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("parses premium/chat usage from remaining percentages", async () => {
     const mockFetch = createProviderUsageFetch(async (_url, init) => {
       const headers = (init?.headers as Record<string, string> | undefined) ?? {};
