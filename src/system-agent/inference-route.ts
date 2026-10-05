@@ -181,16 +181,30 @@ export async function resolveSystemAgentConfiguredRouteFromConfig(
     : undefined;
   const authProfileId = allowCliAuthProfileForwarding ? cliAuthProfileId : selection.profileId;
   const executionConfig = projectSystemAgentExecutionConfig(preparedConfig, modelOwnerAgentId);
+  // The route label must equal the config-written primary so setup activation's
+  // `route.modelLabel === staged.modelRef` guard accepts the saved credential.
+  // The completion resolver strips a self-provider prefix from the model id
+  // (OpenRouter's `openrouter/auto` -> `auto`), so rebuilding the label from
+  // `selection.provider`/`selection.modelId` would drop a literal catalog
+  // namespace (e.g. `openrouter/openrouter/fusion` -> `openrouter/fusion`) and
+  // reject those selections. Prefer a qualified configured ref, which preserves
+  // the literal namespace, and fall back to the canonical `modelKey` for bare
+  // aliases (e.g. `OpenRouter`) and implicit primary / utility derivation.
+  // Drop the auth-profile suffix the selection already separated so the label
+  // stays profile-free (callers append `authProfileId` themselves).
+  const configuredRef = configuredSelection.modelRef?.trim();
+  const configuredModelRef =
+    configuredRef && configuredRef.includes("/")
+      ? selection.profileId && configuredRef.endsWith(`@${selection.profileId}`)
+        ? configuredRef.slice(0, configuredRef.length - selection.profileId.length - 1)
+        : configuredRef
+      : undefined;
+  const modelLabel = modelKey(selection.provider, configuredModelRef || selection.modelId);
   const base = {
     ...(configuredSelection.modelTarget ? { modelTarget: configuredSelection.modelTarget } : {}),
     sourceConfig: runConfig,
     runConfig: executionConfig,
-    // Use the canonical provider/model key so a model id that already carries
-    // its provider prefix (e.g. OpenRouter's `openrouter/auto`) is not rendered
-    // as `openrouter/openrouter/auto`. This keeps the route label identical to
-    // the config-written primary (upsertCanonicalModelConfigEntry also uses
-    // modelKey) and to the staged candidate ref, so setup activation matches.
-    modelLabel: modelKey(selection.provider, selection.modelId),
+    modelLabel,
     provider: executionProvider,
     model: selection.modelId,
     agentDir: selection.agentDir,

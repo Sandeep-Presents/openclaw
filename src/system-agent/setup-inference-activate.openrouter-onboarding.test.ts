@@ -94,10 +94,45 @@ it("keeps a distinct label for a non-default OpenRouter model", async () => {
   expect(label).not.toBe("openrouter/auto");
 });
 
+it("preserves a literal OpenRouter catalog namespace (Fusion)", async () => {
+  // `openrouter/openrouter/fusion` is a documented OpenRouter selection whose
+  // upstream model id is `openrouter/fusion`. The completion resolver strips the
+  // self-provider prefix, so rebuilding the label from the resolved selection
+  // would drop the literal namespace and reject the selection during activation.
+  // The route label must stay `openrouter/openrouter/fusion` to match the
+  // config-written primary and the staged candidate ref.
+  const label = await routeFor("openrouter/openrouter/fusion", "openrouter");
+  expect(label).toBe("openrouter/openrouter/fusion");
+});
+
 it("does not change labels for a non-prefixing provider", async () => {
   // Anthropic model ids are not provider-prefixed, so modelKey is a no-op here;
   // this confirms the change is scoped to self-prefixed ids and other providers
   // are unaffected.
   const label = await routeFor("anthropic/claude-sonnet-4-6", "anthropic");
   expect(label).toBe("anthropic/claude-sonnet-4-6");
+});
+
+it("resolves a bare alias primary to the canonical model label", async () => {
+  // A bare alias primary (`OpenRouter`) is not a qualified provider/model ref,
+  // so the label must come from the resolved selection, not the raw alias text.
+  const config = {
+    agents: {
+      defaults: {
+        model: { primary: "OpenRouter" },
+        models: { "openrouter/auto": { alias: "OpenRouter" } },
+      },
+    },
+    models: { providers: { openrouter: { apiKey: "synthetic-openrouter-key" } } },
+  } as OpenClawConfig;
+  await fs.writeFile(configPath, JSON.stringify(config));
+  const snapshot = await readSnapshot();
+  expect(snapshot.valid, JSON.stringify(snapshot.issues)).toBe(true);
+  const route = await resolveSystemAgentConfiguredRouteFromConfig(
+    snapshot.runtimeConfig,
+    undefined,
+    {},
+    snapshot,
+  );
+  expect(route?.modelLabel).toBe("openrouter/auto");
 });
