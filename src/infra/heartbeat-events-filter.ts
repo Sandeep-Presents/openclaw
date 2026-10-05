@@ -190,9 +190,20 @@ export function isHeartbeatDeliveryAwarenessEvent(event: { contextKey?: string |
   return event.contextKey?.startsWith(HEARTBEAT_DELIVERY_CONTEXT_KEY_PREFIX) ?? false;
 }
 
-export function isCronSystemEvent(evt: string) {
-  if (!evt.trim()) {
+export function isCronSystemEvent(event: { text: string; contextKey?: string | null }) {
+  if (!event.text.trim()) {
     return false;
   }
-  return !isHeartbeatNoiseEvent(evt) && !isExecCompletionEvent(evt);
+  return !isHeartbeatNoiseEvent(event.text) && !isExecCompletionSystemEvent(event);
+}
+
+/** Only the exec producer may select the dedicated completion route. */
+export function isExecCompletionSystemEvent(event: {
+  text: string;
+  contextKey?: string | null;
+}): boolean {
+  return (
+    (!event.contextKey || event.contextKey === "exec" || event.contextKey.startsWith("exec:")) &&
+    isExecCompletionEvent(event.text)
+  );
 }
