@@ -272,6 +272,10 @@ export async function monitorTlonProvider(opts: MonitorTlonOpts): Promise<void> 
   const processMessage = async (params: {
     messageId: string;
     senderShip: string;
+    /** Identity handed to authorization and core; defaults to senderShip. */
+    senderId?: string;
+    /** False when senderShip is an unverified claim that must never act as the owner. */
+    ownerEligible?: boolean;
     messageText: string;
     messageContent?: unknown; // Raw Tlon content for media extraction
     isGroup: boolean;
@@ -299,6 +303,8 @@ export async function monitorTlonProvider(opts: MonitorTlonOpts): Promise<void> 
       resolveChannelIngress,
     } = params;
     let messageText = params.messageText;
+    const senderId = params.senderId ?? senderShip;
+    const ownerEligible = params.ownerEligible ?? true;
 
     let attachments: Array<{ path: string; contentType: string }> = [];
     let unavailableMediaCount = 0;
@@ -437,7 +443,7 @@ export async function monitorTlonProvider(opts: MonitorTlonOpts): Promise<void> 
       senders.add(senderShip);
     }
 
-    const senderRole = isOwner(senderShip) ? "owner" : "user";
+    const senderRole = ownerEligible && isOwner(senderShip) ? "owner" : "user";
     const fromLabel = isGroup
       ? `${senderShip} [${senderRole}] in ${channelNest}`
       : `${senderShip} [${senderRole}]`;
@@ -450,7 +456,7 @@ export async function monitorTlonProvider(opts: MonitorTlonOpts): Promise<void> 
 
     if (shouldComputeAuth) {
       const commandAccess = await resolveTlonCommandAuthorizationWithIngress({
-        senderShip,
+        senderShip: senderId,
         ownerShip: effectiveOwnerShip,
       });
       commandAuthorized = commandAccess.commandAccess.authorized;
@@ -485,9 +491,9 @@ export async function monitorTlonProvider(opts: MonitorTlonOpts): Promise<void> 
       accountId: route.accountId,
       messageId,
       timestamp,
-      from: isGroup ? `tlon:group:${channelNest}` : `tlon:${senderShip}`,
+      from: isGroup ? `tlon:group:${channelNest}` : `tlon:${senderId}`,
       sender: {
-        id: senderShip,
+        id: senderId,
         name: senderShip,
         roles: [senderRole],
       },
@@ -928,6 +934,12 @@ export async function monitorTlonProvider(opts: MonitorTlonOpts): Promise<void> 
       const authorShip = normalizeShip(readString(essay, "author") ?? "");
       const partnerShip = extractDmPartnerShip(whom);
       const senderShip = partnerShip || authorShip;
+      // Club (group DM) events name the conversation, not the sender. Their author is
+      // whatever the sending ship wrote, so it must never carry owner or command identity.
+      const isClubMessage = !partnerShip;
+      const senderId = isClubMessage
+        ? `club:${typeof whom === "string" && whom ? whom : "unknown"}:${senderShip}`
+        : senderShip;
 
       // Ignore the bot's own outbound DM events.
       if (authorShip === botShipName) {
@@ -949,23 +961,29 @@ export async function monitorTlonProvider(opts: MonitorTlonOpts): Promise<void> 
       }
 
       const messageText = rawText;
-      if (isOwner(senderShip) && (await handleApprovalResponse(messageText))) {
+      const ownerDm = !isClubMessage && isOwner(senderShip);
+      if (ownerDm && (await handleApprovalResponse(messageText))) {
         runtime.log?.(`[tlon] Processed approval response from owner: ${messageText}`);
         return;
       }
 
-      if (isOwner(senderShip) && (await handleAdminCommand(messageText))) {
+      if (ownerDm && (await handleAdminCommand(messageText))) {
         runtime.log?.(`[tlon] Processed admin command from owner: ${messageText}`);
         return;
       }
 
-      const ownerDm = isOwner(senderShip);
       const resolveChannelIngress = async (contextBinding?: ChannelIngressContextBinding) =>
         await resolveTlonMessageIngress({
-          senderShip,
+          senderShip: senderId,
           accountId: account.accountId,
           conversation: { kind: "direct", id: senderShip },
-          allowFrom: ownerDm ? [senderShip] : effectiveDmAllowlist,
+          allowFrom: ownerDm
+            ? [senderShip]
+            : isClubMessage
+              ? effectiveDmAllowlist.some((ship) => normalizeShip(ship) === senderShip)
+                ? [senderId]
+                : []
+              : effectiveDmAllowlist,
           contextBinding,
         });
       if (!ownerDm && !(await resolveChannelIngress()).senderAccess.allowed) {
@@ -974,12 +992,18 @@ export async function monitorTlonProvider(opts: MonitorTlonOpts): Promise<void> 
             type: "dm",
             requestingShip: senderShip,
             messagePreview: sliceUtf16Safe(messageText, 0, 100),
-            originalMessage: {
-              messageId,
-              messageText,
-              messageContent: essay.content,
-              timestamp: asFiniteNumber(essay?.sent) ?? Date.now(),
-            },
+            // Approval replays run as the requesting ship. A club message claiming the owner
+            // must not be replayed later with owner identity.
+            ...(isClubMessage && isOwner(senderShip)
+              ? {}
+              : {
+                  originalMessage: {
+                    messageId,
+                    messageText,
+                    messageContent: essay.content,
+                    timestamp: asFiniteNumber(essay?.sent) ?? Date.now(),
+                  },
+                }),
           });
           await queueApprovalRequest(approval);
         } else {
@@ -996,6 +1020,8 @@ export async function monitorTlonProvider(opts: MonitorTlonOpts): Promise<void> 
         messageText: resolvedMessageText,
         messageId,
         senderShip,
+        senderId,
+        ownerEligible: !isClubMessage,
         messageContent: essay.content,
         isGroup: false,
         timestamp: asFiniteNumber(essay?.sent) ?? Date.now(),
