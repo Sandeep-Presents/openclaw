@@ -495,14 +495,6 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
       silent: true,
     },
     {
-      name: "mandatory reply",
-      text: SILENT_REPLY_TOKEN,
-      optional: false,
-      allowed: true,
-      failedTool: false,
-      silent: false,
-    },
-    {
       name: "optional authored silence with empty replies disabled",
       text: SILENT_REPLY_TOKEN,
       optional: true,
@@ -597,15 +589,27 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
   });
 
   it.each([
-    { trigger: "user", outcome: "empty" },
-    { trigger: "cron", outcome: "empty" },
-    { trigger: "user", outcome: "failed" },
-    { trigger: "cron", outcome: "failed" },
+    { trigger: "user", outcome: "empty", unattended: false, label: "" },
+    { trigger: "cron", outcome: "empty", unattended: true, label: "" },
+    { trigger: "heartbeat", outcome: "empty", unattended: true, label: "" },
+    // Legacy heartbeat hosts omit terminalReplyExpectation entirely and only set the
+    // empty-reply policy, so the shared resolver is the only place the required reply
+    // survives: reading the raw field emits NO_REPLY and drops the scheduled reply.
+    {
+      trigger: "heartbeat",
+      outcome: "empty",
+      unattended: false,
+      label: " for a legacy required heartbeat",
+    },
+    { trigger: "user", outcome: "failed", unattended: false, label: "" },
+    { trigger: "cron", outcome: "failed", unattended: true, label: "" },
+    { trigger: "heartbeat", outcome: "failed", unattended: true, label: "" },
   ] as const)(
-    "persists and delivers a $trigger fallback after $outcome finalization",
-    async ({ trigger, outcome }) => {
-      const expectedText =
-        trigger === "cron" ? SILENT_REPLY_TOKEN : SETTLED_TOOL_FINALIZATION_FALLBACK_TEXT;
+    "persists and delivers a $trigger fallback after $outcome finalization$label",
+    async ({ trigger, outcome, unattended, label }) => {
+      const expectedText = unattended
+        ? SILENT_REPLY_TOKEN
+        : SETTLED_TOOL_FINALIZATION_FALLBACK_TEXT;
       const attempt = settledSuccessfulAttempt();
       const emptyAssistant = buildEmbeddedRunnerAssistant({
         content: [{ type: "text", text: "" }],
@@ -622,6 +626,14 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
       const input = finalizationInput(attempt);
       input.terminalBase.runParams.trigger = trigger;
       input.terminalBase.runParams.sourceReplyDeliveryMode = "automatic";
+      // An unattended poll is optional work: nobody is waiting on its reply, so
+      // the placeholder is noise. A user turn is a required reply and must not
+      // be waived by an exhausted finalizer.
+      input.terminalBase.runParams.terminalReplyExpectation = unattended ? "optional" : "required";
+      if (label) {
+        delete input.terminalBase.runParams.terminalReplyExpectation;
+        input.terminalBase.runParams.allowEmptyAssistantReplyAsSilent = false;
+      }
       input.finalization.preparedAttempt.abortSignal = AbortSignal.abort(
         new Error("original attempt timed out"),
       );
@@ -646,10 +658,10 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
         outcome === "empty" ? 2 : 1,
       );
       expect(result.finalizationOutcome).toBe(
-        trigger === "cron" ? "silent-fallback" : outcome === "empty" ? "completed-empty" : "failed",
+        unattended ? "silent-fallback" : outcome === "empty" ? "completed-empty" : "failed",
       );
       expect(result.prepared.payloadsWithToolMedia).toEqual(
-        trigger === "cron" ? [] : [expect.objectContaining({ text: expectedText })],
+        unattended ? [] : [expect.objectContaining({ text: expectedText })],
       );
       expect(result.prepared.finalAssistantRawText).toBe(expectedText);
       if (trigger === "user") {
@@ -707,9 +719,7 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
       }
       expect(terminal.result.meta.error).toBeUndefined();
       expect(terminal.result.payloads).toEqual([expect.objectContaining({ text: expectedText })]);
-      expect(terminal.result.meta.terminalReplyKind).toBe(
-        trigger === "cron" ? "silent-empty" : undefined,
-      );
+      expect(terminal.result.meta.terminalReplyKind).toBe(unattended ? "silent-empty" : undefined);
     },
   );
 
