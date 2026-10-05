@@ -21,6 +21,7 @@ import type { ConfigSchemaAnalysis } from "../../components/config-form.ts";
 import type { Locale } from "../../i18n/index.ts";
 import type { RealtimeTalkInputDevice } from "../chat/talk/input.ts";
 import type { SessionObserverModelSelection } from "./session-observer-settings.ts";
+import type { TabIconViewProps } from "./view-tab-icon.ts";
 
 type SettingsMediaDeviceState = {
   devices: RealtimeTalkInputDevice[];
@@ -59,7 +60,7 @@ export type ConfigViewState = {
   lastFormModeForScroll: ConfigFormMode | null;
 };
 
-export type ConfigProps = {
+export type ConfigProps = TabIconViewProps & {
   raw: string;
   originalRaw: string;
   valid: boolean | null;
