@@ -107,3 +107,50 @@ describe("GitHub API base URL", () => {
     );
   });
 });
+
+
+describe("GitHub discardResponse hanging-body HTTP transport", () => {
+  it("returns from discardResponse and closes a hanging loopback body", async () => {
+    const { createServer } = await import("node:http");
+    const api = await import("./github-api.js");
+    let socketClosed = false;
+    const server = createServer((req, res) => {
+      res.writeHead(429, {
+        "content-type": "application/json",
+        connection: "close",
+        "retry-after": "1",
+      });
+      // Leave the body unread/hanging so await cancel would stall.
+      res.write('{"message":"rate limited"');
+      req.socket?.once("close", () => {
+        socketClosed = true;
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => resolve());
+    });
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("expected TCP address");
+      }
+      const response = await fetch(`http://127.0.0.1:${address.port}/rate-limit`);
+      const started = Date.now();
+      await api.discardResponse(response);
+      const elapsed = Date.now() - started;
+      // Give the cancelled socket a brief window to close.
+      const deadline = Date.now() + 2000;
+      while (!socketClosed && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      console.log(
+        `[github discardResponse HTTP transport proof] returned=true socket_closed=${socketClosed} elapsed_ms=${elapsed}`,
+      );
+      expect(elapsed).toBeLessThan(500);
+      expect(socketClosed).toBe(true);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
