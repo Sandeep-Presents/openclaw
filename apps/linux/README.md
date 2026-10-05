@@ -158,6 +158,39 @@ canonical account `HOME`. Core deliberately denies native-service authority
 when `HOME` or the profile's state directory is relocated. A temporary `HOME`
 alone therefore cannot prove Gateway installation or runtime switching.
 
+### Windows bundled-runtime development
+
+Windows x64 and ARM64 production staging require matching Authenticode-signed artifacts in
+`scripts/lib/openclaw-bun.json`. With the current unsigned entry, ordinary staging
+writes an unavailable sentinel before making any release download. macOS Tauri
+keeps its existing runtime owner; Linux and macOS pin entries are unchanged.
+The fork release owns signing with the OpenClaw Foundation identity. Its verified
+release manifest generates each Windows pin; absent ARM64 artifacts are never
+replaced by x64 payloads, even on Windows hosts that support emulation.
+
+On a disposable Windows host, Git Bash must be on `PATH` alongside Node and Rust.
+An explicit local release directory can prepare an unsigned debug proof:
+
+```powershell
+node apps/linux/scripts/stage-runtime.mjs --unsigned-windows-artifact C:\runtime-test\release
+cd apps/linux/src-tauri
+cargo build --locked
+```
+
+The directory must contain the pinned release's `manifest.json`, `SHA256SUMS`, and
+Windows archive. Staging verifies archive and executable hashes and PE
+architecture, retains Windows-specific provenance, and marks the embedded
+manifest `testOnly: true`. Cargo release builds reject this manifest. The app
+also rejects unsigned manifests without that explicit debug admission. Never
+publish these proof binaries.
+
+Fresh Windows setup offers Stable and Beta and installs a private Node-based CLI;
+the Gateway alone adopts bundled Bun. Startup, reconnects, and app updates only
+observe existing Windows services. Runtime changes use the same confirmed action
+and canonical `--expected-runtime-pin` guard as Linux. See the
+[Windows platform guide](https://docs.openclaw.ai/platforms/windows#tauri-companion-runtime-preparation)
+for file locking, immutable retention, SmartScreen, and uninstall behavior.
+
 ### Inline browser live regression on Linux
 
 The existing first-run driver also exercises real native WebKit browser views
@@ -487,7 +520,7 @@ Quick Chat pins its native request identity before sending, so activity from oth
 
 ## Installer resource
 
-The Rust build assembles the repository's `scripts/install-cli.sh` and shared `scripts/install-policy.sh` into the standalone `install-cli.sh` resource. The app never keeps a forked copy. Fresh release installs select the app version. Existing unmarked stable installs, beta installs, and development installs retain `latest`, `beta`, and the managed Git `main` checkout respectively, under `~/.openclaw`.
+The Rust build assembles the repository's `scripts/install-cli.sh` and shared `scripts/install-policy.sh` into the standalone `install-cli.sh` resource and includes the canonical `scripts/install.ps1` for Windows. The app never keeps a forked copy. Fresh release installs select the app version. Existing unmarked stable installs, beta installs, and development installs retain `latest`, `beta`, and the managed Git `main` checkout respectively, under `~/.openclaw`.
 
 Tauri build/dev hooks stage the runtime through `scripts/stage-openclaw-bun.sh`
 and the shared `scripts/lib/openclaw-bun.json` pin. Linux x64/arm64 use the same
@@ -571,6 +604,9 @@ under Xvfb, including pointer input, snapshots, dashboard replacement, and nativ
 save/cancel, and uploads the synthetic screenshots and JSON results as the
 `linux-inline-browser` proof artifact. Bundles, the full graphical first-run
 scenarios, and AppImage runtime checks remain manual dispatch checks.
+Windows x64 and ARM64 runners verify native runtime materialization, Windows
+paths and service actions, power lifecycle, and desktop process ownership. These
+unit fixtures do not replace native proof with the matching fork Bun artifact.
 
 Manually dispatch `Linux App` on the branch to validate packaging before a
 release. It retains all pull-request checks, builds the `.deb` and AppImage,
