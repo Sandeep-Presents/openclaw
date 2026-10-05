@@ -39,6 +39,7 @@ import type {
 import { logVerbose, shouldLogVerbose } from "../globals.js";
 import { hasErrnoCode } from "../infra/errors.js";
 import { writeExternalFileWithinRoot } from "../infra/fs-safe.js";
+import { withGuardedFetchRequestAuthority } from "../infra/net/fetch-request-authority.js";
 import { resolveProxyFetchFromEnv } from "../infra/net/proxy-fetch.js";
 import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
 import { ImageOptimizationLimitError } from "../media/image-optimization-error.js";
@@ -275,6 +276,7 @@ async function resolveCliMediaPath(params: {
   command: string;
   mediaPath: string;
   outputDir: string;
+  assertCurrent?: () => void;
 }): Promise<string> {
   const commandId = commandBase(params.command);
   if (params.capability !== "audio" || commandId !== "whisper-cli") {
@@ -292,6 +294,7 @@ async function resolveCliMediaPath(params: {
     rootDir: params.outputDir,
     path: path.basename(wavPath),
     write: async (outputPath) => {
+      params.assertCurrent?.();
       await runFfmpeg([
         "-y",
         "-i",
@@ -617,6 +620,7 @@ export async function runProviderEntry(params: {
   agentDir?: string;
   workspaceDir?: string;
   providerRegistry: ProviderRegistry;
+  assertCurrent?: () => void;
   config?: MediaUnderstandingConfig;
   secretOwnerId?: string;
   request?: MediaRequestOverrides;
@@ -757,14 +761,16 @@ export async function runProviderEntry(params: {
     };
     let result: AudioTranscriptionResult;
     if (provider.transcribeAudioWithContext) {
-      const attempt = await provider.transcribeAudioWithContext({
-        ...input,
-        cfg,
-        agentDir: params.agentDir,
-        workspaceDir: params.workspaceDir,
-        profile: entry.profile,
-        preferredProfile: entry.preferredProfile,
-      });
+      const attempt = await withGuardedFetchRequestAuthority(params.assertCurrent, () =>
+        provider.transcribeAudioWithContext!({
+          ...input,
+          cfg,
+          agentDir: params.agentDir,
+          workspaceDir: params.workspaceDir,
+          profile: entry.profile,
+          preferredProfile: entry.preferredProfile,
+        }),
+      );
       if (!attempt.ok) {
         return attempt;
       }
@@ -779,8 +785,10 @@ export async function runProviderEntry(params: {
         providerId,
         provider,
       });
-      result = await executeProviderRequest(providerId, auth, (requestAuth) =>
-        transcribeAudio({ ...input, ...requestAuth }),
+      result = await withGuardedFetchRequestAuthority(params.assertCurrent, () =>
+        executeProviderRequest(providerId, auth, (requestAuth) =>
+          transcribeAudio({ ...input, ...requestAuth }),
+        ),
       );
     }
     if (isTranscriptArtifactText(result.text)) {
@@ -862,6 +870,7 @@ export async function runCliEntry(params: {
   ctx: MsgContext;
   attachment: MediaAttachment;
   cache: MediaAttachmentCache;
+  assertCurrent?: () => void;
   config?: MediaUnderstandingConfig;
   request?: MediaRequestOverrides;
 }): Promise<MediaUnderstandingOutput | null> {
@@ -883,6 +892,7 @@ export async function runCliEntry(params: {
     const stat = await fs.stat(attachmentPath);
     assertMinAudioSize({ size: stat.size, attachmentIndex });
   }
+  params.assertCurrent?.();
   const outputDir = await fs.mkdtemp(
     path.join(resolvePreferredOpenClawTmpDir(), "openclaw-media-cli-"),
   );
@@ -892,6 +902,7 @@ export async function runCliEntry(params: {
       command,
       mediaPath: attachmentPath,
       outputDir,
+      assertCurrent: params.assertCurrent,
     });
     const outputBase = path.join(outputDir, path.parse(mediaPath).name);
 
@@ -926,6 +937,7 @@ export async function runCliEntry(params: {
     if (shouldLogVerbose()) {
       logVerbose(`Media understanding via CLI: ${[command, ...argv].join(" ")}`);
     }
+    params.assertCurrent?.();
     const { stdout, stderr } = await runExec(command, argv, {
       timeoutMs,
       maxBuffer: CLI_OUTPUT_MAX_BUFFER,

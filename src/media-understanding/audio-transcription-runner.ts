@@ -15,8 +15,10 @@ import type { MediaAttachment, MediaUnderstandingProvider } from "./types.js";
 export async function runAudioTranscription(params: {
   ctx: MsgContext;
   cfg: OpenClawConfig;
+  assertCurrent?: () => void;
   attachments?: MediaAttachment[];
   agentDir?: string;
+  workspaceDir?: string;
   providers?: Record<string, MediaUnderstandingProvider>;
   activeModel?: ActiveMediaModel;
   localPathRoots?: readonly string[];
@@ -40,9 +42,11 @@ export async function runAudioTranscription(params: {
       attachments: cache,
       media: attachments,
       agentDir: params.agentDir,
+      workspaceDir: params.workspaceDir,
       providerRegistry,
       config: params.cfg.tools?.media?.audio,
       activeModel: params.activeModel,
+      assertCurrent: params.assertCurrent,
     });
     const output = result.outputs.find((entry) => entry.kind === "audio.transcription");
     const transcript = output?.text?.trim();
