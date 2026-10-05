@@ -37,7 +37,10 @@ beforeEach(() => {
       plugins: { entries: { example: { config: { key: ref, other: "never-return-this" } } } },
     },
   });
-  mocks.metadata.mockReturnValue({ byPluginId: new Map([["example", { id: "example" }]]) });
+  mocks.metadata.mockReturnValue({
+    byPluginId: new Map([["example", { id: "example" }]]),
+    normalizePluginId: (pluginId: string) => pluginId.trim().toLowerCase(),
+  });
   mocks.descriptors.mockReturnValue([{ path, label: "Key", envVars: [] }]);
 });
 describe("plugin credential inspection authorization", () => {
@@ -131,6 +134,19 @@ describe("plugin credential inspection authorization", () => {
       );
     },
   );
+  it("resolves a padded pluginId to the installed credential descriptor", async () => {
+    expect(
+      await invoke(
+        request({
+          params: { pluginId: " Example ", path, baseHash: "public:revision" },
+        }),
+      ),
+    ).toHaveBeenCalledWith(
+      true,
+      { baseHash: "public:revision", credential: { kind: "reference", ref, unresolved: false } },
+      undefined,
+    );
+  });
   it("does not echo authored text from loader errors", async () => {
     mocks.snapshot.mockRejectedValue(new Error("private-secret-from-invalid-config"));
     const respond = await invoke(request());
