@@ -441,7 +441,9 @@ copied.
 
 The updater selects the first usable destination with enough measured free space:
 
-1. An explicit `TMPDIR`, when set.
+1. The caller’s explicit `TMPDIR`, when set. For managed-service updates this is
+   retained only as the snapshot destination preference; the service environment
+   remains authoritative for update and runtime commands.
 2. A private directory under `<state-dir>.update-captures/`, beside the selected
    state directory on its filesystem.
 3. The system temporary directory.

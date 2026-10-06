@@ -76,6 +76,7 @@ async function updateCommandWithRuntime(
   executorOptions?: UpdateCommandExecutorOptions,
 ): Promise<void> {
   const invocationCwd = tryProcessCwd();
+  const snapshotTempDir = process.env.TMPDIR?.trim() || undefined;
   const recoveryState: UpdateCommandRecoveryState = {
     triageTarget: { env: resolveServiceRefreshEnv(process.env, invocationCwd) },
   };
@@ -137,6 +138,7 @@ async function updateCommandWithRuntime(
           ),
         initialization,
         executorOptions,
+        snapshotTempDir,
       );
     if (needsInitialization || captureOriginal) {
       const { initializeAndRunUpdate } = await import("./update-command-initialization-run.js");
@@ -147,7 +149,7 @@ async function updateCommandWithRuntime(
         invocationCwd,
         env,
         execute,
-        { needsInitialization, captureOriginal },
+        { needsInitialization, captureOriginal, snapshotTempDir },
         executorOptions,
       );
     }
@@ -201,6 +203,7 @@ async function updateCommandInternal(
       prepared,
       executor,
       updateStepTimeoutMs,
+      initialization?.snapshotTempDir ?? run.snapshotTempDir,
     );
   if (!target) {
     target = initialization

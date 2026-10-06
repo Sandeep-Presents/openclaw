@@ -5,6 +5,8 @@ import type { UpdateRecoveryBaselineRef } from "../../infra/update-recovery-base
 
 export type UpdateInitializationAdmission = {
   env: NodeJS.ProcessEnv;
+  /** Caller-selected snapshot scratch, kept separate from the service environment. */
+  snapshotTempDir?: string;
   runId: string;
   originalRecoveryCapture?: UpdateRecoveryBaselineRef;
   databasePath: string;

@@ -95,6 +95,7 @@ export async function validateUpdateCandidateCanary(
     assertCurrent?: () => void;
     /** Startup-only callers must prove the preserved input boots without Doctor repair. */
     migrationPolicy?: "rehearse" | "startup-only";
+    snapshotTempDir?: string;
   } & CanaryReceiptCallbacks,
 ): Promise<CanaryResult> {
   const started = Date.now();
@@ -236,6 +237,7 @@ export async function validateUpdateCandidateCanary(
       config: params.config,
       stateDir: params.stateDir,
       env: sourceEnv,
+      snapshotTempDir: params.snapshotTempDir,
       nodeRunner: params.nodeRunner,
       timeoutMs: params.timeoutMs,
       signal: params.signal,

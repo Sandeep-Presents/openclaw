@@ -47,13 +47,15 @@ function measureSnapshotCapacity(
   size: SnapshotSize,
   env: NodeJS.ProcessEnv,
   previous?: UpdateSnapshotCapacity,
+  snapshotTempDir?: string,
 ): UpdateSnapshotCapacity {
   const roots: Array<{
     kind: NonNullable<UpdateSnapshotCapacity["selection"]>["kind"];
     directory: string;
   }> = [];
-  if (env.TMPDIR?.trim()) {
-    roots.push({ kind: "explicit-tmpdir", directory: path.resolve(env.TMPDIR) });
+  const preferredTempDir = snapshotTempDir?.trim() || env.TMPDIR?.trim();
+  if (preferredTempDir) {
+    roots.push({ kind: "explicit-tmpdir", directory: path.resolve(preferredTempDir) });
   }
   const configuredTempDir = os.tmpdir();
   // POSIX os.tmpdir() includes TMPDIR; keep its remaining defaults as a separate fallback.
@@ -103,6 +105,7 @@ type InitialSnapshotParams = {
   config: OpenClawConfig;
   stateDir: string;
   env: NodeJS.ProcessEnv;
+  snapshotTempDir?: string;
 };
 
 /** Measure known SQLite families without allocating state or reading the candidate plugin inventory. */
@@ -112,7 +115,13 @@ async function measureInitialUpdateSnapshotState(params: InitialSnapshotParams) 
     [...files.values()].map(({ spellings }) => spellings[0]),
   );
   return {
-    capacity: measureSnapshotCapacity(params.stateDir, { ...size, pluginBytes: null }, params.env),
+    capacity: measureSnapshotCapacity(
+      params.stateDir,
+      { ...size, pluginBytes: null },
+      params.env,
+      undefined,
+      params.snapshotTempDir,
+    ),
     families: size.families,
   };
 }
@@ -234,6 +243,7 @@ export async function prepareUpdateCandidateStateSnapshot(params: {
   candidateRoot: string;
   stateDir: string;
   env: NodeJS.ProcessEnv;
+  snapshotTempDir?: string;
   workerEnv: (directory: string) => NodeJS.ProcessEnv;
   nodeRunner?: string;
   timeoutMs?: number;
@@ -450,7 +460,13 @@ export async function prepareUpdateCandidateStateSnapshot(params: {
       )),
       pluginBytes: inventory.pluginBytes,
     };
-    capacity = measureSnapshotCapacity(params.stateDir, size, params.env, capacity);
+    capacity = measureSnapshotCapacity(
+      params.stateDir,
+      size,
+      params.env,
+      capacity,
+      params.snapshotTempDir,
+    );
     params.signal?.throwIfAborted();
     params.assertCurrent?.();
     directory = await allocateSnapshotRoot(capacity, { root: selectedRoot.directory, directory });

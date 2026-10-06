@@ -50,7 +50,10 @@ export async function preflightUpdateCandidatePlugins(
 }
 
 export async function validateUpdateCandidateWithProgress(
-  params: Pick<Parameters<typeof validateUpdateCandidateCanary>[0], "root" | "config"> & {
+  params: Pick<
+    Parameters<typeof validateUpdateCandidateCanary>[0],
+    "root" | "config" | "snapshotTempDir"
+  > & {
     env: NodeJS.ProcessEnv;
     assertCurrent: () => void;
     writeOptions: ReturnType<

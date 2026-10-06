@@ -41,6 +41,7 @@ export async function runAdmittedUpdate(
   ) => Promise<void>,
   initialization?: InitializedUpdate,
   executorOptions?: UpdateCommandExecutorOptions,
+  snapshotTempDir?: string,
 ): Promise<void> {
   const refusal = initialization?.refusal;
   const serviceRoot = initialization
@@ -72,6 +73,7 @@ export async function runAdmittedUpdate(
     expectedForeground:
       prepared.controlPlaneUpdateSentinelMeta?.completionOwner === "gateway-restart" || undefined,
     installKind: prepared.installKind,
+    snapshotTempDir: initialization?.snapshotTempDir ?? snapshotTempDir,
   });
   const opts = { ...inputOpts, run };
   prepared.controlPlaneUpdateSentinelMeta = {

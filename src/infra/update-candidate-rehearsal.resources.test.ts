@@ -322,6 +322,44 @@ it.each([
   }
 });
 
+it("uses caller snapshot scratch ahead of managed service TMPDIR", async () => {
+  const f = await fixture();
+  const callerTemp = path.join(f.root, "caller-scratch");
+  const serviceTemp = path.join(f.root, "service-scratch");
+  await fs.mkdir(callerTemp);
+  await fs.mkdir(serviceTemp);
+  vi.spyOn(diskSpace, "tryReadDiskSpace").mockImplementation((targetPath) => ({
+    targetPath,
+    checkedPath: targetPath,
+    availableBytes: targetPath === callerTemp ? 1024 ** 3 : 0,
+    totalBytes: 1024 ** 3,
+  }));
+  const serviceEnv = { TMPDIR: serviceTemp };
+  const rehearsal = await prepareUpdateCandidateRehearsal({
+    config: {},
+    stateDir: f.stateDir,
+    candidateRoot: f.root,
+    env: serviceEnv,
+    snapshotTempDir: callerTemp,
+  });
+  try {
+    expect(rehearsal.stateDir.startsWith(`${await fs.realpath(callerTemp)}${path.sep}`)).toBe(true);
+    expect(rehearsal.snapshotCapacity).toMatchObject({
+      reason: "explicit-tmpdir",
+      selection: { kind: "explicit-tmpdir", directory: rehearsal.stateDir },
+      candidates: expect.arrayContaining([
+        expect.objectContaining({ directory: callerTemp, availableBytes: 1024 ** 3 }),
+      ]),
+    });
+    expect(rehearsal.snapshotCapacity.candidates).not.toContainEqual(
+      expect.objectContaining({ directory: serviceTemp }),
+    );
+    expect(serviceEnv.TMPDIR).toBe(serviceTemp);
+  } finally {
+    await rehearsal.cleanup();
+  }
+});
+
 it("skips an explicit temporary path that is a file without changing it", async () => {
   const f = await fixture();
   const nominated = path.join(f.root, "operator-file");

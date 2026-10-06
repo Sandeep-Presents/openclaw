@@ -68,6 +68,8 @@ export type UpdateCommandOptions = Pick<UpdateRunResult, "sourceRuntimePrepared"
     defaultStepTimeoutMs?: number;
     activationTimeoutMs?: number;
     env: NodeJS.ProcessEnv;
+    /** Caller-selected snapshot scratch; never changes the managed service environment. */
+    snapshotTempDir?: string;
     /** Candidate-reported admission checks; execution authority remains installed-owned. */
     candidateAdmissionChecks?: readonly string[];
     /** Completion routing only; mutation authority remains with the live executor. */

@@ -63,7 +63,7 @@ export async function initializeAndRunUpdate(
   invocationCwd: string | undefined,
   env: NodeJS.ProcessEnv,
   runInitialized: (initialization: InitializedUpdate) => Promise<void>,
-  policy: { needsInitialization: boolean; captureOriginal: boolean },
+  policy: { needsInitialization: boolean; captureOriginal: boolean; snapshotTempDir?: string },
   executorOptions?: UpdateCommandExecutorOptions,
 ): Promise<void> {
   const targetEnv = resolveUpdateTargetEnv({ baseEnv: env, nodeRunner: process.execPath });
@@ -87,6 +87,7 @@ export async function initializeAndRunUpdate(
                     prepared,
                     executor,
                     prepared.timeoutMs ?? DEFAULT_UPDATE_STEP_TIMEOUT_MS,
+                    policy.snapshotTempDir,
                   ),
               ).then(
                 (target) => (target ? { target } : undefined),
@@ -130,6 +131,7 @@ export async function initializeAndRunUpdate(
               const initialization: InitializedUpdate = {
                 ...selection,
                 env,
+                ...(policy.snapshotTempDir ? { snapshotTempDir: policy.snapshotTempDir } : {}),
                 runId,
                 executor,
                 callerLegacyConfigPlan,

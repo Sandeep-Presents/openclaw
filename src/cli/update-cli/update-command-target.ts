@@ -141,6 +141,7 @@ export async function resolveUpdateCommandTarget(
   prepared: NonNullable<Awaited<ReturnType<typeof prepareUpdateCommand>>>,
   executor: UpdateCommandExecutor,
   updateStepTimeoutMs: number,
+  snapshotTempDir?: string,
 ) {
   let preparingTarget = true;
   try {
@@ -619,6 +620,7 @@ export async function resolveUpdateCommandTarget(
           config: source.config,
           stateDir: resolveStateDir(env),
           env,
+          snapshotTempDir: snapshotTempDir ?? opts.run?.snapshotTempDir,
         });
         opts.run?.executorFence?.assertCurrent();
         recordPreflightStep(snapshot);
