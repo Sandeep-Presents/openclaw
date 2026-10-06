@@ -4,7 +4,6 @@ import { scheduleMainSessionRecoveryPendingTarget } from "../../agents/main-sess
 import { isMainRestartRecoveryCandidate } from "../../agents/main-session-recovery/main-session-recovery-state.js";
 import {
   claimMainSessionRecoveryOwner,
-  releaseMainSessionRecoveryOwner,
   type MainSessionRecoveryPendingTarget,
   type MainSessionRecoveryOwnerLease,
 } from "../../agents/main-session-recovery/main-session-recovery-store.js";
@@ -42,6 +41,7 @@ import {
 import { getAsyncWorkSignal } from "../../shared/async-work-scope.js";
 import {
   createReplyOperation,
+  hasReplyOperationExecutionStarted,
   isReplyRunSuccessorAdmissionBlocked,
   REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
   replyRunRegistry,
@@ -62,7 +62,10 @@ import {
   lifecycleAdmissionByOperation,
   resolveVisibleActiveWaitMs,
 } from "./reply-run-registry.state.js";
-import { waitForRestartRecoveryProgress } from "./reply-turn-recovery-wait.js";
+import {
+  releaseReplyRecoveryOwner,
+  waitForRestartRecoveryProgress,
+} from "./reply-turn-recovery-wait.js";
 import { createReplyTurnRotationEvidence } from "./reply-turn-rotation.js";
 
 /** Admission result for a reply turn attempting to own the session run slot. */
@@ -85,23 +88,6 @@ class QueuedFollowupLifecycleInvalidatedError extends Error {}
 class ReplyOperationChangedDuringAdmissionError extends Error {}
 
 const log = createSubsystemLogger("auto-reply/reply-turn-admission");
-
-async function releaseReplyRecoveryOwner(
-  lease: MainSessionRecoveryOwnerLease | undefined,
-): Promise<MainSessionRecoveryPendingTarget | undefined> {
-  if (!lease) {
-    return undefined;
-  }
-  try {
-    return await releaseMainSessionRecoveryOwner(lease);
-  } catch (error) {
-    log.warn(`failed to release main-session recovery reply owner: ${formatErrorMessage(error)}`);
-    // The durable owner schedules exact-token retries. A completed reply must
-    // not keep its successor barrier and lifecycle admission until that
-    // background repair wins a contested SQLite write.
-    return undefined;
-  }
-}
 
 /** Runs owner work with its admission marked as the initiating lifecycle context. */
 export async function runWithReplyOperationLifecycleAdmission<T>(
@@ -268,7 +254,7 @@ export async function admitReplyTurn(
         expectedSessionId = expectedSessionId ? storelessRotation.sessionId : undefined;
       }
       if (isReplyRunSuccessorAdmissionBlocked(params.sessionKey)) {
-        if (params.kind === "heartbeat") {
+        if (params.kind === "background") {
           return { status: "skipped", reason: "active-run" };
         }
         const successorAdmission = await waitForReplyRunSuccessorAdmission(
@@ -424,7 +410,7 @@ export async function admitReplyTurn(
             admittedSessionEntry &&
             ((admittedSessionEntry.status === "running" &&
               (admittedSessionEntry.abortedLastRun === true ||
-                (params.kind !== "heartbeat" &&
+                (params.kind !== "background" &&
                   admittedSessionEntry.restartRecoveryRuns !== undefined))) ||
               admittedSessionEntry.mainRestartRecovery?.tombstone !== undefined) &&
             isMainRestartRecoveryCandidate(admittedSessionEntry, params.sessionKey);
@@ -435,7 +421,7 @@ export async function admitReplyTurn(
             (params.kind !== "visible" || admittedSessionEntry?.abortedLastRun === true)
           ) {
             admission?.release();
-            if (params.kind === "heartbeat") {
+            if (params.kind === "background") {
               return { status: "skipped", reason: "active-run" };
             }
             await (params.kind === "visible"
@@ -448,7 +434,7 @@ export async function admitReplyTurn(
             recoveryOwnerRelease === undefined &&
             admittedSessionEntry?.abortedLastRun === true &&
             !admittedSessionEntry.mainRestartRecovery?.tombstone &&
-            params.kind !== "heartbeat" &&
+            params.kind !== "background" &&
             gatewayContext &&
             recoveryRuntime
           ) {
@@ -531,13 +517,13 @@ export async function admitReplyTurn(
               originatingLeafEntryId: params.originatingLeafEntryId,
               upstreamAbortSignal: params.upstreamAbortSignal,
               respectFollowupAdmissionBarrier:
-                params.kind === "queued_followup" || params.kind === "heartbeat",
+                params.kind === "queued_followup" || params.kind === "background",
             });
             bindGatewayContextResolver(operation, resolveGatewayContext);
           }
         } catch (error) {
           const pendingRecovery = recoveryOwnerLease
-            ? await releaseReplyRecoveryOwner(recoveryOwnerLease)
+            ? await releaseReplyRecoveryOwner(recoveryOwnerLease, log)
             : undefined;
           if (
             error instanceof ReplyRunAlreadyActiveError &&
@@ -618,7 +604,7 @@ export async function admitReplyTurn(
             | Promise<MainSessionRecoveryPendingTarget | undefined>
             | undefined;
           const releaseRecoveryOwner = () =>
-            (recoveryOwnerRelease ??= releaseReplyRecoveryOwner(recoveryOwnerLease));
+            (recoveryOwnerRelease ??= releaseReplyRecoveryOwner(recoveryOwnerLease, log));
           if (recoveryOwnerLease) {
             registerReplyOperationSuccessorBarrier({
               operation,
@@ -668,13 +654,13 @@ export async function admitReplyTurn(
           continue;
         }
         if (error instanceof ReplyRunSuccessorAdmissionBlockedError) {
-          if (params.kind === "heartbeat") {
+          if (params.kind === "background") {
             return { status: "skipped", reason: "active-run" };
           }
           continue;
         }
         if (error instanceof ReplyRunFollowupAdmissionBlockedError) {
-          if (params.kind === "heartbeat") {
+          if (params.kind === "background") {
             return { status: "skipped", reason: "active-run" };
           }
           const followupAdmission = await waitForReplyRunFollowupAdmission(
@@ -695,16 +681,20 @@ export async function admitReplyTurn(
           throw error;
         }
         const activeOperation = replyRunRegistry.get(params.sessionKey);
-        if (params.kind === "visible" && activeOperation?.turnKind === "heartbeat") {
-          // Background heartbeats must yield before queue policy can steer this
-          // user turn into the heartbeat's model run and lose its visible reply.
+        if (
+          params.kind === "visible" &&
+          activeOperation?.turnKind === "background" &&
+          !hasReplyOperationExecutionStarted(activeOperation)
+        ) {
+          // Unstarted background work yields before queue policy can steer a
+          // user turn into it and lose its visible reply.
           activeOperation.supersede();
         }
         if (params.kind === "visible" && expireVisibleStaleOperation(activeOperation)) {
           continue;
         }
         // Visible and queued turns may wait for active runs when waitForActive is set.
-        if (params.kind === "heartbeat" || params.waitForActive === false) {
+        if (params.kind === "background" || params.waitForActive === false) {
           return { status: "skipped", reason: "active-run", activeOperation };
         }
         const activeWaitTimeoutMs =
@@ -753,6 +743,13 @@ export async function admitReplyTurn(
 }
 
 /** Resolves the default turn kind from reply options. */
-export function resolveReplyTurnKind(opts?: { isHeartbeat?: boolean }): ReplyTurnKind {
-  return opts?.isHeartbeat === true ? "heartbeat" : "visible";
+export function resolveReplyTurnKind(opts?: {
+  scheduledAutomation?: { job: { idleOnly?: boolean } };
+  internalEventExecution?: unknown;
+}): ReplyTurnKind {
+  return opts?.scheduledAutomation?.job.idleOnly
+    ? "background"
+    : opts?.internalEventExecution
+      ? "queued_followup"
+      : "visible";
 }
