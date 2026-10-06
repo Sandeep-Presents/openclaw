@@ -605,6 +605,8 @@ export function createSessionsSpawnTool(
               {
                 ...inheritedSpawnContext(),
                 currentMessagingTarget: opts?.currentMessagingTarget,
+                currentThreadTs: opts?.currentThreadTs,
+                currentConversationOrigin: opts?.currentConversationOrigin,
                 agentGroupId: opts?.agentGroupId ?? undefined,
                 workspaceDir: opts?.workspaceDir,
                 sessionPermissionPolicy: opts?.sessionPermissionPolicy,
@@ -659,6 +661,8 @@ export function createSessionsSpawnTool(
               requesterThinkingLevel: opts?.requesterThinkingLevel,
               requesterModel: opts?.requesterModel,
               currentMessagingTarget: opts?.currentMessagingTarget ?? opts?.currentChannelId,
+              currentThreadTs: opts?.currentThreadTs,
+              currentConversationOrigin: opts?.currentConversationOrigin,
               agentGroupId: opts?.agentGroupId,
               agentGroupChannel: opts?.agentGroupChannel,
               workspaceDir: opts?.workspaceDir,

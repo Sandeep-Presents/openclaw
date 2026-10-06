@@ -13,7 +13,10 @@ import {
 } from "../../../routing/session-key.js";
 import { deliveryContextFromSession } from "../../../utils/delivery-context.read.js";
 import { normalizeDeliveryContext } from "../../../utils/delivery-context.shared.js";
-import { resolveRequesterOriginForChild } from "../../spawn-requester-origin.js";
+import {
+  resolveRequesterOriginForChild,
+  resolveSpawnRequesterConversationTarget,
+} from "../../spawn-requester-origin.js";
 import {
   resolveInternalSessionKey,
   resolveMainSessionAlias,
@@ -28,6 +31,10 @@ type AcpSpawnRequesterContext = {
   agentAccountId?: string;
   agentTo?: string;
   agentThreadId?: string | number;
+  currentMessagingTarget?: string;
+  currentChannelId?: string;
+  currentThreadTs?: string | number;
+  currentConversationOrigin?: import("../../../gateway/mcp-grant-store.js").McpCurrentConversationOrigin;
   agentGroupSpace?: string | null;
   agentMemberRoleIds?: string[];
 };
@@ -94,6 +101,10 @@ export function resolveAcpSpawnRequesterState(params: {
     typeof params.ctx.agentThreadId === "string"
       ? Boolean(normalizeOptionalString(params.ctx.agentThreadId))
       : params.ctx.agentThreadId != null;
+  // ACP thread binding uses the same requester-conversation resolution as native
+  // spawn: an explicit agentTo wins, and CLI runtimes without `agentTo` fall
+  // back to currentMessagingTarget/currentChannelId/currentThreadTs (issue #158945).
+  const requesterConversation = resolveSpawnRequesterConversationTarget(params.ctx);
   return {
     isSubagentSession,
     hasActiveSubagentBinding,
@@ -117,8 +128,8 @@ export function resolveAcpSpawnRequesterState(params: {
       requesterAgentId: params.requesterAgentId,
       requesterChannel: params.ctx.agentChannel,
       requesterAccountId: params.ctx.agentAccountId,
-      requesterTo: params.ctx.agentTo,
-      requesterThreadId: params.ctx.agentThreadId,
+      requesterTo: requesterConversation.to,
+      requesterThreadId: requesterConversation.threadId,
       requesterGroupSpace: params.ctx.agentGroupSpace,
       requesterMemberRoleIds: params.ctx.agentMemberRoleIds,
     }),
