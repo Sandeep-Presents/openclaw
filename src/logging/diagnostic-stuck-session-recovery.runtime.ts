@@ -231,6 +231,7 @@ export async function recoverStuckDiagnosticSession(
     let aborted = false;
     let drained = true;
     let forceCleared = false;
+    let recoveringModelAttempt = false;
     const staleActiveProgressAbortMs = resolveStaleActiveProgressAbortMs(params);
     const staleActiveLaneTaskReleaseMs = resolveStaleActiveLaneTaskReleaseMs(params);
     const activeReplyActivity = activeWorkSessionId
@@ -330,6 +331,7 @@ export async function recoverStuckDiagnosticSession(
       aborted = result.aborted;
       drained = result.drained;
       forceCleared = result.forceCleared;
+      recoveringModelAttempt = result.recoveringModelAttempt === true;
     }
 
     if (!activeSessionId && activeWorkSessionId && isEmbeddedAgentRunActive(activeWorkSessionId)) {
@@ -374,6 +376,7 @@ export async function recoverStuckDiagnosticSession(
         aborted = result.aborted;
         drained = result.drained;
         forceCleared = result.forceCleared;
+        recoveringModelAttempt = result.recoveringModelAttempt === true;
         activeSessionId = activeWorkSessionId;
       } else {
         return reportRecoveryOutcome({
@@ -388,6 +391,17 @@ export async function recoverStuckDiagnosticSession(
       }
     }
 
+    if (recoveringModelAttempt) {
+      return reportRecoveryOutcome({
+        status: "skipped",
+        action: "keep_lane",
+        reason: "model_attempt_recovery",
+        sessionId: params.sessionId,
+        sessionKey: params.sessionKey,
+        activeSessionId,
+        activeWorkKind: "embedded_run",
+      });
+    }
     // A terminal outcome can commit after the initial snapshot but before the
     // abort owner checks it. Its finalization lease still owns lane release.
     if (

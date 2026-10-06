@@ -9,14 +9,32 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../../test/helpers/temp-dir.js";
+import { createReplyOperation } from "../../../auto-reply/reply/reply-run-registry.js";
+import { testing as replyRecoveryTesting } from "../../../auto-reply/reply/reply-run-registry.test-support.js";
 import { CliPluginInvocationResources } from "../../../cli/plugin-invocation-resources.js";
 import { replaceSessionEntry } from "../../../config/sessions/session-accessor.js";
 import {
   resolveSqliteReadScope,
   toDatabaseOptions,
 } from "../../../config/sessions/session-accessor.sqlite-scope.js";
+import { getAgentEventLifecycleGeneration } from "../../../infra/agent-events.js";
+import {
+  waitForDiagnosticEventsDrained,
+  setDiagnosticsEnabledForProcess,
+  resetDiagnosticEventsForTest,
+} from "../../../infra/diagnostic-events.js";
 import { createDiagnosticTraceContext } from "../../../infra/diagnostic-trace-context.js";
-import { createDiagnosticEmbeddedRunOwner } from "../../../logging/diagnostic-run-activity.js";
+import {
+  getDiagnosticSessionActivitySnapshot,
+  startDiagnosticRunActivityTracking,
+  stopDiagnosticRunActivityTracking,
+  createDiagnosticEmbeddedRunOwner,
+} from "../../../logging/diagnostic-run-activity.js";
+import { recoverStuckDiagnosticSession } from "../../../logging/diagnostic-stuck-session-recovery.runtime.js";
+import { logSessionStateChange } from "../../../logging/diagnostic.js";
+import { resetDiagnosticStateForTest } from "../../../logging/diagnostic.test-support.js";
+import { enqueueCommandInLane } from "../../../process/command-queue.js";
+import { resetCommandQueueStateForTest } from "../../../process/command-queue.test-support.js";
 import { AsyncWorkScope } from "../../../shared/async-work-scope.js";
 import {
   closeOpenClawAgentDatabasesAsync,
@@ -24,6 +42,15 @@ import {
 } from "../../../state/openclaw-agent-db.js";
 import { resolveOpenClawAgentSqlitePath } from "../../../state/openclaw-agent-db.paths.js";
 import { runOpenClawAgentWorkerWrite } from "../../../state/openclaw-agent-write-admission.js";
+import {
+  prepareAgentRunAdmission,
+  createOperationalRunInstanceRef,
+} from "../../admitted-run-context.js";
+import {
+  mergeAgentRunAttemptTerminal,
+  projectAgentRunAttemptTerminal,
+} from "../../agent-run-terminal-outcome.js";
+import { withPreparedEmbeddedRunToolAuthority } from "../../harness/tool-authority.runtime.js";
 import { createAgentCleanupScope } from "../../run-cleanup-timeout.js";
 import type { StreamFn } from "../../runtime/index.js";
 import { guardSessionManager } from "../../session-tool-result-guard-wrapper.js";
@@ -35,13 +62,25 @@ import {
 } from "../../sessions/agent-session-loop-correctness.test-support.js";
 import { convertToLlm } from "../../sessions/messages.js";
 import { SessionManager } from "../../sessions/session-manager.js";
+import { resolveEmbeddedSessionLane } from "../lanes.js";
+import { clearActiveEmbeddedRun } from "../runs.js";
+import { testing as embeddedRecoveryTesting } from "../runs.test-support.js";
+import { abortable } from "./abortable.js";
 import type { EmbeddedAttemptExecutionPhaseInput } from "./attempt-execution-types.js";
+import {
+  createEmbeddedAttemptIdleInterruption,
+  createEmbeddedAttemptRunAbort,
+} from "./attempt-finalize.js";
 import {
   cleanupEmbeddedAttemptSessionPhase,
   createEmbeddedAttemptSessionSettleTracker,
 } from "./attempt-session-settle.js";
+import { prepareCatalogExecutor } from "./attempt-stream-prepare.test-support.js";
 import { installEmbeddedAttemptStreamGuards } from "./attempt-stream.js";
 import { createEmbeddedAttemptTranscriptLifecycle } from "./attempt-transcript-lifecycle.js";
+import { createEmbeddedRunLaneController } from "./lane-controller.js";
+import type { RunEmbeddedAgentParams } from "./params.js";
+import type { EmbeddedAttemptExecutionState } from "./types.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 registerAgentSessionLoopTestLifecycle();
@@ -85,6 +124,7 @@ async function createFixture(
     >["withSessionWriteSettlement"];
     toolNames?: string[];
     thinkingRecovery?: boolean;
+    onIdleTimeout?: (error: Error) => void;
   } = {},
 ) {
   const model = options.thinkingRecovery
@@ -201,13 +241,15 @@ async function createFixture(
     diagnostics: { runTrace: createDiagnosticTraceContext() },
     lifecycle: { readYieldState: () => ({ yieldDetected: false }) },
   } as unknown as EmbeddedAttemptExecutionPhaseInput;
-  installEmbeddedAttemptStreamGuards(input, {
+  const diagnosticOwner = createDiagnosticEmbeddedRunOwner({
+    runId: input.attempt.runId,
+    sessionId: target.sessionId,
+    sessionKey: target.sessionKey,
+  });
+  const streamGuards = installEmbeddedAttemptStreamGuards(input, {
     onRejectedProviderReplayRepaired: repaired,
-    onIdleTimeout: () => {},
-    diagnosticOwner: createDiagnosticEmbeddedRunOwner({
-      runId: input.attempt.runId,
-      sessionId: target.sessionId,
-    }),
+    onIdleTimeout: options.onIdleTimeout ?? (() => {}),
+    diagnosticOwner,
   });
   expect(replayPresent(), "fixture preparation must retain replay").toBe(true);
   const streamOptions: ReplayOptions = {
@@ -215,6 +257,9 @@ async function createFixture(
     onCompactionRejected: previousNotification,
   };
   return {
+    input,
+    diagnosticOwner,
+    streamGuards,
     controller,
     manager,
     session: sdkSession,
@@ -255,6 +300,34 @@ async function createFixture(
 }
 
 describe("installed replay repair ownership", () => {
+  it("keeps the newer model request active when an older result finishes late", async () => {
+    const firstSource = createAssistantMessageEventStream();
+    const secondSource = createAssistantMessageEventStream();
+    const provider = vi
+      .fn<StreamFn>()
+      .mockReturnValueOnce(firstSource)
+      .mockReturnValueOnce(secondSource);
+    const fixture = await createFixture(provider);
+    let first: Awaited<ReturnType<typeof fixture.open>> | undefined;
+    let second: Awaited<ReturnType<typeof fixture.open>> | undefined;
+    try {
+      first = await fixture.open();
+      expect(fixture.streamGuards.isModelCallActive()).toBe(true);
+      second = await fixture.open();
+      expect(fixture.streamGuards.isModelCallActive()).toBe(true);
+      firstSource.end(createAssistant(testModel, [{ type: "text", text: "Older result" }]));
+      await first.result();
+      expect(fixture.streamGuards.isModelCallActive()).toBe(true);
+      secondSource.end(createAssistant(testModel, [{ type: "text", text: "Current result" }]));
+      await second.result();
+      expect(fixture.streamGuards.isModelCallActive()).toBe(false);
+    } finally {
+      firstSource.end();
+      secondSource.end();
+      await Promise.allSettled([first?.result(), second?.result()]);
+    }
+  });
+
   it("closes a partial-only thinking stream without waiting for ordinary provider completion", async () => {
     const source = createAssistantMessageEventStream();
     const fixture = await createFixture(
@@ -650,3 +723,292 @@ describe("installed replay repair ownership", () => {
     }
   });
 });
+
+it.each([false, true])(
+  "retains the parent reply and lane through repeated watchdog recovery (callerCancel=%s)",
+  async (callerCancel) => {
+    // Fake scheduling controls only existing timers. setSystemTime advances the
+    // evidence clock without firing the provider's own idle callback first.
+    vi.useFakeTimers({
+      toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+    });
+    setDiagnosticsEnabledForProcess(true);
+    startDiagnosticRunActivityTracking();
+    const enteredProvider = createDeferred();
+    const providerAborted = createDeferred();
+    const releaseProvider = createDeferred();
+    const releaseParent = createDeferred();
+    let releaseRawProvider: (() => void) | undefined;
+    let idleInterrupt: ((error: Error) => boolean) | undefined;
+    const provider: StreamFn = (model, _context, options) => {
+      const source = createAssistantMessageEventStream();
+      source.push({ type: "start", partial: createAssistant(model, []) });
+      releaseRawProvider = () => {
+        const interrupted = createAssistant(model, [], "aborted");
+        source.push({ type: "error", reason: "aborted", error: interrupted });
+        source.end();
+      };
+      const onAbort = () => {
+        providerAborted.resolve();
+        // A cancelled provider may still own its pump. Its actual promise/stream
+        // settlement is controlled here; no owner/phase/terminal fact is injected.
+        void releaseProvider.promise.then(() => {
+          options?.signal?.removeEventListener("abort", onAbort);
+          releaseRawProvider?.();
+        });
+      };
+      options?.signal?.addEventListener("abort", onAbort, { once: true });
+      if (options?.signal?.aborted) {
+        onAbort();
+      }
+      enteredProvider.resolve();
+      return source;
+    };
+    const fixture = await createFixture(provider, {
+      withSessionWriteSettlement: async (operation) => operation(),
+      onIdleTimeout: (error) => idleInterrupt?.(error),
+    });
+    const session = fixture.session;
+    if (!session) {
+      throw new Error("real AgentSession was not constructed");
+    }
+    const operation = createReplyOperation({
+      sessionKey: fixture.attempt.sessionKey!,
+      sessionId: fixture.attempt.sessionId,
+      resetTriggered: false,
+    });
+    operation.setPhase("running");
+    const admission = prepareAgentRunAdmission({
+      cfg: {},
+      operationalRunInstance: createOperationalRunInstanceRef(fixture.attempt.runId),
+      facts: {
+        agentId: "main",
+        runId: fixture.attempt.runId,
+        ingress: { kind: "system", state: "present", boundary: "watchdog-custody" },
+      },
+    });
+    let active: Promise<void> | undefined;
+    let queued: Promise<void> | undefined;
+    let recovery: ReturnType<typeof recoverStuckDiagnosticSession> | undefined;
+    let repeatedRecovery: ReturnType<typeof recoverStuckDiagnosticSession> | undefined;
+    let prompt: Promise<void> | undefined;
+    let prepared: ReturnType<typeof prepareCatalogExecutor> | undefined;
+    const tracker = createEmbeddedAttemptSessionSettleTracker(session);
+    const state: Pick<EmbeddedAttemptExecutionState, "terminal"> = { terminal: { kind: "ok" } };
+    const laneName = resolveEmbeddedSessionLane(fixture.attempt.sessionKey!);
+    let generation = getAgentEventLifecycleGeneration();
+    let params: RunEmbeddedAgentParams & { sessionFile: string } = {
+      config: fixture.attempt.config,
+      runId: fixture.attempt.runId,
+      sessionId: fixture.attempt.sessionId,
+      sessionKey: fixture.attempt.sessionKey,
+      provider: fixture.attempt.provider,
+      model: fixture.attempt.modelId,
+      workspaceDir: path.dirname(fixture.manager.getSessionTarget()!.storePath!),
+      // Existing lane fixtures use this logical transcript locator; no file is written.
+      sessionFile: path.join(
+        path.dirname(fixture.manager.getSessionTarget()!.storePath!),
+        `${fixture.attempt.sessionId}.jsonl`,
+      ),
+      prompt: "Wait for the model",
+      timeoutMs: 3_600_000,
+      abortSignal: operation.abortSignal,
+      replyOperation: operation,
+    };
+    const lane = createEmbeddedRunLaneController({
+      getLifecycleGeneration: () => generation,
+      getParams: () => params,
+      globalLane: "test:watchdog-custody-global",
+      sessionLane: laneName,
+      initialQueuedLifecycleGeneration: generation,
+      setLifecycleGeneration: (value) => {
+        generation = value;
+      },
+      setParams: (value) => {
+        params = value;
+      },
+    });
+    try {
+      const admittedRunContext = await admission.admit("embedded", "watchdog-custody");
+      await withPreparedEmbeddedRunToolAuthority(
+        { admittedRunContext, replyOperation: operation },
+        {
+          ...fixture.attempt,
+          workspaceDir: params.workspaceDir,
+          sessionFile: params.sessionFile,
+          prompt: params.prompt,
+          timeoutMs: params.timeoutMs,
+          abortSignal: params.abortSignal,
+          replyOperation: operation,
+          agentId: "main",
+        },
+        undefined,
+        async (ownedAttempt) => {
+          const controls = lane.createAttemptControls({ admittedRunContext });
+          const nativeAbort = createEmbeddedAttemptRunAbort({
+            abortActiveSession: tracker.abortActiveSession,
+            activeSession: session,
+            attempt: { ...fixture.attempt, onAttemptTimeout: controls.onAttemptTimeout },
+            getQueueHandle: () => prepared?.queueHandle,
+            isProbeSession: false,
+            log: { warn: () => {} },
+            runAbortController: fixture.controller,
+            state,
+          });
+          idleInterrupt = createEmbeddedAttemptIdleInterruption({
+            runAbortController: fixture.controller,
+            activeSession: session,
+            state,
+            abortRun: nativeAbort,
+          });
+          prepared = prepareCatalogExecutor({
+            activeSession: session,
+            sessionManager: fixture.manager,
+            diagnosticOwner: fixture.diagnosticOwner,
+            attempt: {
+              ...ownedAttempt,
+              replyOperation: operation,
+              onAttemptAbort: controls.onAttemptAbort,
+            },
+            sessionKey: fixture.attempt.sessionKey,
+            replyOperation: operation,
+            streamReplies: false,
+            runAbortController: fixture.controller,
+            abortRun: nativeAbort,
+            recoverStalledModelCall: () =>
+              fixture.streamGuards.isModelCallActive() &&
+              idleInterrupt?.(
+                new Error("LLM idle timeout (diagnostic stuck recovery): no response from model"),
+              ) === true,
+            markExternalAbort: () => {
+              state.terminal = mergeAgentRunAttemptTerminal(state.terminal, {
+                kind: "aborted",
+                source: "external",
+              });
+            },
+            getRunState: () => ({
+              ...projectAgentRunAttemptTerminal(state.terminal),
+              yieldDetected: false,
+            }),
+          });
+          active = lane.enqueueSession(async () => {
+            try {
+              prompt = tracker.trackPromptSettlePromise(session.prompt("Wait for the model"));
+              void prompt.catch(() => {});
+              await abortable(fixture.controller.signal, prompt).catch(() => {});
+              await tracker.buildAbortSettlePromise();
+              await releaseParent.promise;
+            } finally {
+              controls.close();
+              operation.complete();
+            }
+          });
+          void active.catch(() => {});
+          const activeSettled = observeSettlement(active);
+          await enteredProvider.promise;
+          await waitForDiagnosticEventsDrained();
+          // Qualification comes from the production stream diagnostic wrapper.
+          expect(getDiagnosticSessionActivitySnapshot(fixture.attempt)).toMatchObject({
+            activeWorkKind: "model_call",
+          });
+          const queuedStarted = vi.fn(async () => {});
+          queued = enqueueCommandInLane(laneName, queuedStarted);
+          const startedAt = Date.now();
+          vi.setSystemTime(startedAt + 5 * 60_000 + 1);
+          logSessionStateChange({
+            sessionId: fixture.attempt.sessionId,
+            sessionKey: fixture.attempt.sessionKey,
+            state: "processing",
+          });
+          recovery = recoverStuckDiagnosticSession({
+            sessionId: fixture.attempt.sessionId,
+            sessionKey: fixture.attempt.sessionKey,
+            ageMs: 5 * 60_000 + 1,
+            queueDepth: 1,
+            allowActiveAbort: true,
+          });
+          void recovery.catch(() => {});
+          const cancelled = await Promise.race([
+            providerAborted.promise.then(() => ({ kind: "cancelled" as const })),
+            recovery.then((outcome) => ({ kind: "returned" as const, outcome })),
+          ]);
+          if (cancelled.kind === "returned") {
+            throw new Error(
+              `Watchdog did not interrupt the provider: ${JSON.stringify(cancelled.outcome)}`,
+            );
+          }
+          await nextTurn();
+          // Named baseline defect: current recovery expires parent/run_stalled
+          // and external abort calls onAttemptAbort, cancelling the parent lane.
+          expect.soft(operation.result).toBeNull();
+          expect.soft(operation.abortSignal.aborted).toBe(false);
+          expect.soft(lane.abortSignal.aborted).toBe(false);
+          expect.soft(controls.isCurrent()).toBe(true);
+          expect(activeSettled()).toBe(false);
+          expect(queuedStarted).not.toHaveBeenCalled();
+          vi.setSystemTime(Date.now() + 5 * 60_000 + 1);
+          repeatedRecovery = recoverStuckDiagnosticSession({
+            sessionId: fixture.attempt.sessionId,
+            sessionKey: fixture.attempt.sessionKey,
+            ageMs: 5 * 60_000 + 1,
+            queueDepth: 1,
+            allowActiveAbort: true,
+          });
+          void repeatedRecovery.catch(() => {});
+          await nextTurn();
+          expect.soft(operation.result).toBeNull();
+          expect.soft(operation.abortSignal.aborted).toBe(false);
+          expect.soft(lane.abortSignal.aborted).toBe(false);
+          expect.soft(controls.isCurrent()).toBe(true);
+          expect(queuedStarted).not.toHaveBeenCalled();
+          if (callerCancel) {
+            expect(operation.abortByUser()).toBe(true);
+            expect(prepared.queueHandle.recoverStalledModelCall?.()).toBe(false);
+            expect(operation.abortSignal.aborted).toBe(true);
+            expect(lane.abortSignal.aborted).toBe(true);
+          }
+          releaseProvider.resolve();
+          releaseRawProvider?.();
+          await Promise.allSettled([prompt, tracker.buildAbortSettlePromise()]);
+          releaseParent.resolve();
+          await active.catch(() => {});
+          // Do not fake a fallback receipt here. Real outer run-loop integration
+          // must separately show its normal recovery/fallback after settlement.
+          await recovery;
+          await repeatedRecovery;
+          await queued;
+          prepared.subscription.unsubscribe();
+          clearActiveEmbeddedRun(
+            fixture.attempt.sessionId,
+            prepared.queueHandle,
+            fixture.attempt.sessionKey,
+          );
+          expect(prepared.queueHandle.recoverStalledModelCall?.()).toBe(false);
+        },
+      );
+    } finally {
+      releaseProvider.resolve();
+      releaseRawProvider?.();
+      releaseParent.resolve();
+      await Promise.allSettled([active, prompt, recovery, repeatedRecovery, queued]);
+      prepared?.subscription.unsubscribe();
+      if (prepared) {
+        clearActiveEmbeddedRun(
+          fixture.attempt.sessionId,
+          prepared.queueHandle,
+          fixture.attempt.sessionKey,
+        );
+      }
+      operation.complete();
+      admission.close();
+      stopDiagnosticRunActivityTracking();
+      setDiagnosticsEnabledForProcess(false);
+      vi.useRealTimers();
+      embeddedRecoveryTesting.resetActiveEmbeddedRuns();
+      replyRecoveryTesting.resetReplyRunRegistry();
+      resetCommandQueueStateForTest();
+      resetDiagnosticStateForTest();
+      resetDiagnosticEventsForTest();
+    }
+  },
+);

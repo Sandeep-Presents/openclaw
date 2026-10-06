@@ -395,6 +395,7 @@ export function installEmbeddedAttemptStreamGuards(
   }
   let diagnosticModelCallSeq = 0;
   let modelResponseTerminal = false;
+  let activeModelCallId: string | undefined;
   session.agent.streamFn = wrapStreamFnWithDiagnosticModelCallEvents(session.agent.streamFn, {
     config: attempt.config,
     runId: attempt.runId,
@@ -425,7 +426,13 @@ export function installEmbeddedAttemptStreamGuards(
     onTerminal: () => {
       modelResponseTerminal = true;
     },
-    onStarted: () => {
+    onFinished: (callId) => {
+      if (activeModelCallId === callId) {
+        activeModelCallId = undefined;
+      }
+    },
+    onStarted: (callId) => {
+      activeModelCallId = callId;
       modelResponseTerminal = false;
       attempt.onExecutionPhase?.({
         phase: "model_call_started",
@@ -453,5 +460,6 @@ export function installEmbeddedAttemptStreamGuards(
       }
     },
     getPromptCacheObservation: cacheObserver.getObservation,
+    isModelCallActive: () => activeModelCallId !== undefined,
   };
 }
