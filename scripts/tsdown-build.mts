@@ -5,7 +5,6 @@
 import {
   spawn,
   spawnSync,
-  type StdioOptions,
   type SpawnSyncOptionsWithStringEncoding,
   type SpawnSyncReturns,
 } from "node:child_process";
@@ -576,22 +575,15 @@ export function pruneUntrackedGeneratedSourceDeclarations(
   return removed;
 }
 
-function findFatalUnresolvedImport(lines: string[]) {
-  for (const line of lines) {
-    if (!line.includes("[UNRESOLVED_IMPORT]")) {
-      continue;
-    }
-
-    const normalizedLine = line.replace(ANSI_ESCAPE_RE, "");
-    if (
-      !normalizedLine.includes(BUNDLED_PLUGIN_PATH_PREFIX) &&
-      !DEPENDENCY_PATH_MARKERS.some((marker) => normalizedLine.includes(marker))
-    ) {
-      return normalizedLine;
-    }
+function findFatalUnresolvedImport(line: string) {
+  if (!line.includes("[UNRESOLVED_IMPORT]")) {
+    return null;
   }
-
-  return null;
+  const normalizedLine = line.replace(ANSI_ESCAPE_RE, "");
+  return !normalizedLine.includes(BUNDLED_PLUGIN_PATH_PREFIX) &&
+    !DEPENDENCY_PATH_MARKERS.some((marker) => normalizedLine.includes(marker))
+    ? normalizedLine
+    : null;
 }
 
 function parsePositiveIntegerEnv(value: string | undefined, name: string) {
@@ -648,9 +640,6 @@ function resolveTsdownMemoryBudget(params: ResolvedMemoryLimitParams = {}) {
     unresolvedCgroupMemory: false,
   };
 }
-
-const resolveTsdownMaxOldSpaceMb = (params: ResolvedMemoryLimitParams = {}) =>
-  resolveTsdownMemoryBudget(params).maxOldSpaceMb;
 
 /**
  * Measured against this repo by running the full eleven-invocation build inside real cgroups.
@@ -714,7 +703,7 @@ export function describeInsufficientTsdownHeap(
 }
 
 function normalizeTsdownNodeOptions(nodeOptions: string, params: ResolvedMemoryLimitParams = {}) {
-  const maxOldSpaceMb = resolveTsdownMaxOldSpaceMb(params);
+  const { maxOldSpaceMb } = resolveTsdownMemoryBudget(params);
   const parts = nodeOptions.trim().split(/\s+/u).filter(Boolean);
   const normalized: string[] = [];
   let foundMaxOldSpaceSize = false;
@@ -801,7 +790,7 @@ export function createTsdownOutputScanner(params: { maxCaptureBytes?: number } =
     const lines = combined.split(/\r?\n/u);
     pendingLine = lines.pop() ?? "";
     for (const line of lines) {
-      fatalUnresolvedImport ??= findFatalUnresolvedImport([line]);
+      fatalUnresolvedImport ??= findFatalUnresolvedImport(line);
     }
   }
 
@@ -816,7 +805,7 @@ export function createTsdownOutputScanner(params: { maxCaptureBytes?: number } =
     },
     finish() {
       if (pendingLine) {
-        fatalUnresolvedImport ??= findFatalUnresolvedImport([pendingLine]);
+        fatalUnresolvedImport ??= findFatalUnresolvedImport(pendingLine);
         pendingLine = "";
       }
       return {
@@ -1082,12 +1071,6 @@ export function prepareTsdownBuildExecution(
   return plan;
 }
 
-type TaskkillRunner = (
-  command: string,
-  args: string[],
-  options: { killSignal?: NodeJS.Signals; stdio?: StdioOptions; timeout?: number },
-) => { error?: Error; status: number | null };
-
 export async function runTsdownBuildInvocation(
   invocation: TsdownBuildInvocation,
   params: {
@@ -1096,7 +1079,7 @@ export async function runTsdownBuildInvocation(
     env?: NodeJS.ProcessEnv;
     scanner?: ReturnType<typeof createTsdownOutputScanner>;
     platform?: NodeJS.Platform;
-    runTaskkill?: TaskkillRunner;
+    runTaskkill?: NonNullable<Parameters<typeof terminateManagedChild>[2]>["runTaskkill"];
   } = {},
 ): Promise<TsdownBuildResult> {
   const stdout = params.stdout ?? process.stdout;
@@ -1240,12 +1223,16 @@ export async function runTsdownBuildInvocation(
         }, timeoutMs).unref()
       : null;
 
+  function stopObserving() {
+    settled = true;
+    cleanupParentSignalHandlers();
+    clearInterval(heartbeat ?? undefined);
+    clearTimeout(timeout ?? undefined);
+  }
+
   return new Promise<TsdownBuildResult>((resolve) => {
     child.once("error", (error) => {
-      settled = true;
-      cleanupParentSignalHandlers();
-      clearInterval(heartbeat ?? undefined);
-      clearTimeout(timeout ?? undefined);
+      stopObserving();
       stderr.write(`[tsdown-build] failed to start: ${String(error)}\n`);
       resolve({
         status: 1,
@@ -1275,10 +1262,7 @@ export async function runTsdownBuildInvocation(
         );
       };
       function finish() {
-        settled = true;
-        cleanupParentSignalHandlers();
-        clearInterval(heartbeat ?? undefined);
-        clearTimeout(timeout ?? undefined);
+        stopObserving();
         const finalStatus = parentSignal ? signalExitCode(parentSignal) : exitStatus;
         if (finalStatus !== 0 || timedOut) {
           reportFailure(finalStatus);
@@ -1310,10 +1294,7 @@ export async function runTsdownBuildInvocation(
         }
         finish();
       })().catch((error: unknown) => {
-        settled = true;
-        cleanupParentSignalHandlers();
-        clearInterval(heartbeat ?? undefined);
-        clearTimeout(timeout ?? undefined);
+        stopObserving();
         reportFailure(1);
         resolve({
           status: 1,
@@ -1358,11 +1339,7 @@ async function executeTsdownInvocation(
     return 124;
   }
 
-  if (typeof result.status === "number") {
-    return result.status;
-  }
-
-  return 1;
+  return result.status ?? 1;
 }
 
 /** Execute CLI and staged declaration plans with the same diagnostics and deadlines. */

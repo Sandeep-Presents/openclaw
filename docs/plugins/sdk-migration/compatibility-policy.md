@@ -66,6 +66,25 @@ offsets for `isInsideCode`. Regions returned by `findCodeRegions` additionally
 include parser-owned `block` metadata; callers supplying their own ranges do not
 need to provide it.
 
+### Harness tool construction
+
+Harnesses should await `params.hostCapabilities.createToolSurfaceAsync(options,
+bindingOptions?)`. Each construction reads fresh exec policy through the existing
+worker, then binds tools to the exact admitted host. Ordinary exec-approval read
+errors use conservative deny defaults. Migration errors and authority loss reject
+construction; callers must not retry through the synchronous factory.
+The public `createOpenClawCodingToolsAsync(options?)` factory from
+`openclaw/plugin-sdk/agent-harness` provides the same awaited preparation for
+non-harness callers. Harnesses use the host capability to retain its source
+authority and private bindings.
+
+The synchronous `createToolSurface` and `createOpenClawCodingTools` contracts
+shipped in OpenClaw 2026.9.8 remain available with their existing arguments,
+array results, and completion timing. TypeScript marks them deprecated for
+removal at the next Plugin SDK major, subject to explicit breaking-release
+approval. Bundled callers use the awaited factories. This migration changes no
+stored data, schema, retention, or update behavior.
+
 ### WebSocket options and constructors
 
 `websocket-runtime` retains the `ws.ClientOptions` alias and `WebSocket`
@@ -122,6 +141,30 @@ propagate to the caller, and ingress retains its fail-closed handling. Prepared
 entries do not replace current message or channel authority. No schema, retention,
 or update migration is required, and no runtime warning is emitted.
 
+### Inbound envelope timestamps
+
+Await `readSessionUpdatedAtAsync` from `openclaw/plugin-sdk/session-store-runtime`
+or `runtime.channel.session.readSessionUpdatedAtAsync`. The existing session
+reader captures the physical store and reads current activity in its worker.
+Missing stores return `undefined` without creating or migrating a database.
+Read failures propagate; there is no synchronous fallback.
+
+From `openclaw/plugin-sdk/channel-inbound`, await
+`createChannelInboundEnvelopeBuilderAsync` or `resolveInboundSessionEnvelopeContextAsync`
+at the message's formatting boundary. Resolve the route through `resolveAgentRoute`
+from `openclaw/plugin-sdk/routing` before preparing its envelope.
+Create a fresh builder for each inbound message. Its returned formatter is
+synchronous and reuses that message's prepared timestamp; `previousTimestamp: null`
+still suppresses timestamps for history entries. Prepared timestamps describe
+activity and never replace current channel or session authority.
+
+The synchronous timestamp and envelope APIs shipped in OpenClaw 2026.9.8 remain
+deprecated compatibility until the next Plugin SDK major and explicit breaking-release
+approval. This includes the callback-based `inbound-envelope` helpers and
+`dispatchInboundDirectDmWithRuntime`; bundled callers use the awaited preparation
+and `dispatchInboundDirectDm`. Existing synchronous signatures and callback timing
+remain unchanged. No schema, stored data, retention, or update migration is required.
+
 ### Watched-session harness context
 
 `buildWatchedSessionsHarnessContext` from
@@ -155,6 +198,24 @@ canonical result, and the host lifecycle normalizes legacy results before
 core consumes them. New producers should construct `terminal`; consumers of
 the union must narrow the result before reading it. The current
 `EmbeddedRunAttemptResult` contract keeps `terminal` required.
+
+### Session observer and progress visibility
+
+The October 4, 2026 `session-observer-progress-sync-reads` record retains the
+synchronous observer methods and progress visibility contracts shipped in
+2026.9.8. `context.sessionObserver.handleEvent`, `getCompanionSnapshot`, and
+`dispose` retain their synchronous signatures and completion behavior.
+`PluginHookReplyDispatchEvent.shouldSendToolSummaries` remains a live boolean
+getter, `shouldSendFullToolDetails` remains a dispatch-time boolean, and
+`GetReplyOptions.onVerboseProgressVisibility` still receives a synchronous getter.
+
+Core and bundled callers use the [awaited replacements](/plugins/sdk-migration/how-to-migrate#await-session-observer-and-progress-visibility).
+The released ACP hook helper still accepts boolean-only events from external
+callers; host-created events provide fresh awaited predicates. Deprecated native
+reads remain compatibility debt until the next Plugin SDK major and explicit
+breaking-release approval. JSDoc and the compatibility registry record the
+deprecation without runtime warnings. Schemas, retained data, and update behavior
+are unchanged.
 
 ### Mention Inbox persistence
 
@@ -209,6 +270,26 @@ canonical worker writer; incognito retains its process-local owner until its
 separate cutover. Schemas, persisted bytes, and supported update paths are
 unchanged. Removal still requires explicit breaking-release approval.
 
+### Reply run-start transcript facts
+
+`GetReplyOptions.onAgentRunStart` from `openclaw/plugin-sdk/reply-runtime`, also
+provided to `reply_dispatch` hooks, retains the callback shipped in OpenClaw
+2026.9.8: `(runId, executionIdentityToken?, options?) => unknown`. Existing
+callbacks and producers that omit later arguments remain supported. Completion
+ownership still requires returning `"reply-dispatch"` synchronously.
+
+Current runtime helpers supply prepared transcript facts in an optional fourth
+argument. Wrappers should forward every argument and the callback's return value;
+see [message hooks](/plugins/hooks/messages). The facts describe the transcript
+boundary and do not grant session or write authority. When a released producer
+omits them, the Gateway retains its synchronous transcript-read fallback.
+
+Only that omitted-facts fallback is deprecated as of October 4, 2026; the callback
+itself remains supported. The fallback stays until the next Plugin SDK major and
+explicit breaking-release approval. The compatibility registry records the
+migration without runtime warnings. Schemas, retained data, and update behavior
+are unchanged.
+
 ### ACP metadata binding compatibility
 
 `openclaw/plugin-sdk/acp-runtime` retains the one-argument
@@ -221,6 +302,34 @@ The `acp-session-metadata-released-signatures` compatibility record is active:
 these APIs remain supported, with no deprecation warning or required migration.
 Worker activation must preserve them; changing these released contracts requires
 an explicitly approved Plugin SDK major release.
+
+### Memory session binding compatibility
+
+`openclaw/plugin-sdk/memory-core-host-engine-sessions` retains the readers
+published in `v2026.9.8`: `buildSessionEntry(path, options?)`,
+`listSessionTranscriptCorpusEntriesForAgent(agentId, options?)`, and
+`readSessionResetRecallCutoff(scope)`. Their Promise results and synchronous
+`onTranscriptMessage(message, observedAt)` observer remain unchanged. Internal
+incognito actor sources are not plugin arguments.
+
+The `memory-session-released-signatures` compatibility record is active. These
+APIs remain supported without warnings or a required migration; changing their
+released contracts requires an explicitly approved Plugin SDK major release.
+
+### Session upstream-link writes
+
+`openclaw/plugin-sdk/session-catalog` retains the synchronous
+`upsertSessionUpstreamLink` and `deleteSessionUpstreamLink` contracts released in
+`v2026.9.8`, including their immediate return values and completion timing. The
+production-private `agent-harness-session-runtime` initializer also retains its
+synchronous `prepare().link(input)` method for released official harnesses.
+
+The `session-upstream-links-sync-persistence` compatibility record deprecates
+those methods without runtime warnings. Core and bundled callers await
+`upsertSessionUpstreamLinkAsync`, `deleteSessionUpstreamLinkAsync`, or the
+initializer's `linkAsync`. The synchronous contracts remain until the next
+Plugin SDK major and explicit breaking-release approval. See
+[await session upstream links](/plugins/sdk-migration/how-to-migrate#await-session-upstream-links).
 
 ### Native session generation authority
 
