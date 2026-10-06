@@ -109,7 +109,7 @@ import {
 } from "./session-lifecycle-preparation.js";
 import { loadSessionLifecycleRuntime } from "./session-lifecycle-runtime-loader.js";
 import { resolvePluginSessionOwnershipError } from "./session-plugin-ownership.js";
-import { resolveRequestedSessionAgentId } from "./session-request-agent.js";
+import * as sessionAgent from "./session-request-agent.js";
 import { invalidSessionRequest, sessionCreationFailure } from "./session-request-error.js";
 import { resolveGatewaySessionStoreTargetInWorker } from "./session-utils-store-worker.js";
 import type { GatewaySessionStoreTarget } from "./session-utils-store.types.js";
@@ -168,11 +168,11 @@ export async function createGatewaySession(
   const projectId = normalizeOptionalString(params.projectId);
   const pendingProjectGitUrl = normalizeOptionalString(params.pendingProjectGitUrl);
   const requestedToolOverrides = params.toolOverrides !== undefined;
-  const selectedAgent = resolveRequestedSessionAgentId(
-    params.cfg,
-    requestedKey ?? (params.agentId === undefined ? "main" : undefined),
-    params.agentId ?? parseAgentSessionKey(requestedKey)?.agentId,
-  );
+  const selectedAgent = sessionAgent.resolveSessionCreateAgentId(params.cfg, {
+    key: requestedKey,
+    agentId: params.agentId,
+    parentSessionKey,
+  });
   if (!selectedAgent.ok) {
     return selectedAgent;
   }
@@ -265,7 +265,7 @@ export async function createGatewaySession(
   let parentSelectedAgentId: string | undefined;
   let parentSessionTarget: GatewaySessionStoreTarget | undefined;
   if (parentSessionKey) {
-    const parentRequestedAgent = resolveRequestedSessionAgentId(
+    const parentRequestedAgent = sessionAgent.resolveRequestedSessionAgentId(
       params.cfg,
       parentSessionKey,
       !parseAgentSessionKey(parentSessionKey) &&
