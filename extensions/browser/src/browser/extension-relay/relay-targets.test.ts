@@ -81,8 +81,14 @@ function fixture() {
         .filter((f) => f.method === "Target.attachedToTarget" && f.sessionId === parent)
         .map((f) => asOptionalRecord(f.params)!);
     const attach = async () => {
+      const before = attached().length;
       await request("Target.setAutoAttach", undefined, enabled);
-      const id = attached().at(-1)?.sessionId;
+      const id = await vi.waitFor(() => {
+        expect(attached().length).toBeGreaterThan(before);
+        const next = attached().at(-1)?.sessionId;
+        expect(typeof next).toBe("string");
+        return String(next);
+      });
       if (typeof id !== "string") {
         throw new Error("Root attachment missing");
       }
@@ -502,7 +508,7 @@ describe("logical Target interests", () => {
         })
       ).error,
     ).toBeUndefined();
-    expect(c.attached()).toHaveLength(1);
+    await vi.waitFor(() => expect(c.attached()).toHaveLength(1));
   });
 
   it("routes a flat descendant through its non-flat ancestor transport", async () => {

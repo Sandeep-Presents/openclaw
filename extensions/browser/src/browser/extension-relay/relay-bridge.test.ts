@@ -305,6 +305,65 @@ describe("ExtensionRelayBridge", () => {
     });
   });
 
+  it("does not auto-attach a foreign extension page", async () => {
+    const bridge = new ExtensionRelayBridge();
+    const { socket, handlers } = wireExtension(bridge);
+    sendHello(handlers, [
+      { tabId: 1, url: "https://example.com", title: "Example", active: true },
+      {
+        tabId: 2,
+        url: "chrome-extension://abcdefghijklmnopabcdefghijklmnop/options.html",
+        title: "Other extension",
+        active: false,
+      },
+    ]);
+
+    const client = new FakeSocket();
+    const cdp = bridge.attachCdpClientSocket(client);
+    deliver(cdp, { id: 1, method: "Target.setAutoAttach", params: { autoAttach: true } });
+    await flush();
+
+    expect(socket.frames().filter((frame) => frame.type === "attach")).toEqual([
+      expect.objectContaining({ tabId: 1 }),
+    ]);
+    expect(
+      client.frames().find((frame) => frame.method === "Target.attachedToTarget"),
+    ).toMatchObject({
+      params: { targetInfo: { targetId: "target-1" } },
+    });
+  });
+
+  it("acknowledges auto-attach before a slow native attachment settles", async () => {
+    const bridge = new ExtensionRelayBridge();
+    let attach: Extract<RelayToExtensionMessage, { type: "attach" }> | undefined;
+    const extension = wireExtension(bridge, (message) => {
+      if (message.type === "attach") {
+        attach = message;
+        return null;
+      }
+      return replyFor(message);
+    });
+    sendHello(extension.handlers);
+
+    const client = new FakeSocket();
+    const cdp = bridge.attachCdpClientSocket(client);
+    deliver(cdp, { id: 1, method: "Target.setAutoAttach", params: { autoAttach: true } });
+    await flush();
+
+    expect(attach).toBeDefined();
+    expect(response(client, 1)).toMatchObject({ result: {} });
+
+    deliver(extension.handlers, {
+      type: "result",
+      seq: attach?.seq,
+      result: { targetId: "target-1" },
+    });
+    await flush();
+    expect(
+      client.frames().find((frame) => frame.method === "Target.attachedToTarget"),
+    ).toBeTruthy();
+  });
+
   it.each(["active", "replaced extension"])(
     "binds an atomic creation reply to its current owner: %s",
     async (lifecycle) => {
@@ -1041,6 +1100,6 @@ it.each(["attach", "createTab"])(
     deliver(extension, { type: "result", seq: detach?.seq, result: {} });
     await closing;
     expect(finished).toBe(true);
-    expect(clientSocket.frames()).toEqual([]);
+    expect(clientSocket.frames()).toEqual(operation === "attach" ? [{ id: 1, result: {} }] : []);
   },
 );

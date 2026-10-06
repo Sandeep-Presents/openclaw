@@ -413,7 +413,10 @@ describe("relay logical Runtime subscriptions", () => {
       JSON.stringify({ id: 2, method: "Target.setAutoAttach", params: { autoAttach: true } }),
     );
     await flush();
-    expect(socket.frames()).toEqual([]);
+    // Root auto-attach now acknowledges before its background native attach
+    // settles. Closing prevents the later attachment announcement, not that
+    // protocol acknowledgement.
+    expect(socket.frames()).toEqual([{ id: 1, result: {} }]);
     expect(extension.frames().filter((frame) => frame.type === "detach")).toHaveLength(1);
     const detach = extension.frames().find((frame) => frame.type === "detach");
     ext.onMessage(JSON.stringify({ type: "result", seq: detach?.seq, result: {} }));
