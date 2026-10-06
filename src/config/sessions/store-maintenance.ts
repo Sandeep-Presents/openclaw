@@ -42,6 +42,8 @@ export type ResolvedSessionMaintenanceConfig = {
   preserveRecentMs?: number | null;
   resetArchiveRetentionMs: number | null;
   maxDiskBytes: number | null;
+  /** Only an operator-set budget may evict idle durable conversations; the default budget keeps them. */
+  maxDiskBytesExplicit?: boolean;
   highWaterBytes: number | null;
 };
 
@@ -143,6 +145,9 @@ export function resolveMaintenanceConfigFromInput(
     // Missing or invalid retention keeps extracted transcripts until disk-budget pressure.
     resetArchiveRetentionMs: resolveMaintenanceDuration(maintenance?.resetArchiveRetention, null),
     maxDiskBytes,
+    maxDiskBytesExplicit:
+      maxDiskBytes != null &&
+      Boolean(normalizeStringifiedOptionalString(maintenance?.maxDiskBytes)),
     highWaterBytes: resolveHighWaterBytes(maintenance, maxDiskBytes),
   };
 }
