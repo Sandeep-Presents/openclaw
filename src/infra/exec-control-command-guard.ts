@@ -245,14 +245,24 @@ function targetsLiveStateSqliteDatabase(
   });
 }
 
+function withVerticalWhitespaceAsWordCharacters(command: string): string {
+  return command.replace(/[\v\f\r]/gu, "\u00a0");
+}
+
 export async function detectUnsafeExecControlShellCommand(
   command: string,
   context: ExecControlShellCommandContext = {},
 ): Promise<UnsafeExecControlShellCommandKind | null> {
   const rawCommand = command.trim();
-  let explanation: CommandExplanation | null = null;
+  const explanations: CommandExplanation[] = [];
   try {
-    explanation = await explainShellCommand(rawCommand);
+    const explanation = await explainShellCommand(rawCommand);
+    explanations.push(explanation);
+    if (!explanation.ok && /[\v\f\r]/u.test(rawCommand)) {
+      explanations.push(
+        await explainShellCommand(withVerticalWhitespaceAsWordCharacters(rawCommand)),
+      );
+    }
   } catch (error) {
     if (error instanceof CommandExplanationWorkLimitError) {
       return "incomplete-analysis";
@@ -260,14 +270,17 @@ export async function detectUnsafeExecControlShellCommand(
     // Fall back to line-local shell splitting below.
   }
   const argvCandidates = (() => {
-    if (explanation?.ok) {
-      const commands = [...explanation.topLevelCommands, ...explanation.nestedCommands];
-      return commands.flatMap((step) => buildCommandPayloadArgvCandidates(step.argv));
+    const explainedCandidates = explanations
+      .flatMap((explanation) => [...explanation.topLevelCommands, ...explanation.nestedCommands])
+      .flatMap((step) => buildCommandPayloadArgvCandidates(step.argv));
+    if (explanations[0]?.ok) {
+      return explainedCandidates;
     }
-    return normalizeStringEntries(rawCommand.split(/\r?\n/)).flatMap((line) => {
+    const lineCandidates = normalizeStringEntries(rawCommand.split(/\r?\n/)).flatMap((line) => {
       const argv = splitShellArgs(line);
       return argv ? buildCommandPayloadArgvCandidates(argv) : [[line]];
     });
+    return [...explainedCandidates, ...lineCandidates];
   })();
   const controlCandidates = uniqueStrings(argvCandidates.map((argv) => argv.join(" ")));
   for (const candidate of controlCandidates) {
