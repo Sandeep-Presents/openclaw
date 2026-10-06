@@ -1,4 +1,5 @@
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db-contract.js";
+import { CLI_HISTORY_CHANGED_BEFORE_PREPARATION } from "./cli-history-boundary.js";
 import { readSessionTranscriptActivePathEntryRelation } from "./session-accessor.sqlite-active-events.js";
 import { validateSessionTranscriptContextInDatabase } from "./session-accessor.sqlite-model-context.js";
 import { readSessionTranscriptWatermarkInDatabase } from "./session-accessor.sqlite-transcript-watermark.js";
@@ -25,7 +26,7 @@ export function assertSessionEntryPatchCliHistory(
     fresh.generation !== context.watermark.generation ||
     fresh.maxSeq !== context.watermark.maxSeq
   ) {
-    throw new Error("CLI history changed before preparation");
+    throw new Error(CLI_HISTORY_CHANGED_BEFORE_PREPARATION);
   }
 }
 

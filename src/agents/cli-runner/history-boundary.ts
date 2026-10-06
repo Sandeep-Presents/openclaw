@@ -1,5 +1,6 @@
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import {
+  CLI_HISTORY_CHANGED_BEFORE_PREPARATION,
   isKnownCliHistoryBoundary,
   runWithCliHistoryWriter,
   type CliHistoryBoundary,
@@ -32,6 +33,11 @@ import { buildSessionContext, SessionManager } from "../sessions/session-manager
 import { createCliRunCurrentAssertion } from "./execution-target.js";
 import type { PreparedCliRunContext } from "./types.js";
 
+// A finished or aborted run may still settle its own transcript rows (delivery media
+// rewrite, aborted partial) after its lane released the session. Its planning snapshot
+// is then stale before anything committed; plan again instead of failing the turn.
+const CLI_HISTORY_PREPARATION_ATTEMPTS = 3;
+
 /**
  * History belongs to the local transcript, not the latest native handle. Cover only
  * a proven-empty start or the contiguous events of the previously admitted CLI run.
@@ -39,6 +45,26 @@ import type { PreparedCliRunContext } from "./types.js";
  * unknown until an explicitly empty context starts a new history boundary.
  */
 export async function prepareCliHistoryBoundary(
+  params: PreparedCliRunContext["params"],
+  identity: { credential?: AuthProfileCredential },
+): Promise<CliHistoryWriter | undefined> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await prepareCliHistoryBoundaryOnce(params, identity);
+    } catch (error) {
+      if (
+        attempt >= CLI_HISTORY_PREPARATION_ATTEMPTS ||
+        params.abortSignal?.aborted ||
+        !(error instanceof Error) ||
+        error.message !== CLI_HISTORY_CHANGED_BEFORE_PREPARATION
+      ) {
+        throw error;
+      }
+    }
+  }
+}
+
+async function prepareCliHistoryBoundaryOnce(
   params: PreparedCliRunContext["params"],
   identity: { credential?: AuthProfileCredential },
 ): Promise<CliHistoryWriter | undefined> {
