@@ -59,6 +59,7 @@ import {
   buildStructuredFallbackSummary,
   createSummaryQualityRetentionPlan,
   extractOpaqueIdentifiers,
+  formatRequiredAskContext,
   nestRequiredSummaryHeadings,
   wrapUntrustedInstructionBlock,
 } from "./compaction-safeguard-quality.js";
@@ -948,9 +949,17 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
         fileOpsSummary,
         workspaceContext: await workspaceContextPromise,
       });
-      const fitted = fitCompactionSummary(preparation.summaryTokenBudget, (maxChars) =>
-        budgetCompactionSummary(body, suffix, maxChars, qualityRetention),
-      );
+      const fitted = fitCompactionSummary(preparation.summaryTokenBudget, (maxChars) => {
+        const candidate = budgetCompactionSummary(body, suffix, maxChars, qualityRetention);
+        // Below the owner's cap the fit bisects on maxChars and assumes cost grows with it.
+        // A candidate under the plan's minimum is one the audited path cancels on, usually a
+        // head cut without the required facts. Leading dense CJK prose can price that cut
+        // above retained candidates just over the minimum, so the search settled on a smaller
+        // cut. Report those candidates as too small so the search stays above the minimum.
+        return candidate.qualityRetentionInfeasible && maxChars < MAX_COMPACTION_SUMMARY_CHARS
+          ? undefined
+          : candidate;
+      });
       if (!fitted.ok) {
         throw fitted.error;
       }
