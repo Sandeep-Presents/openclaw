@@ -12,6 +12,7 @@ import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
 import { AGENT_HARNESS_SESSION_KEY_RESERVED_MESSAGE } from "../sessions/agent-harness-session-key.js";
 import { MODEL_SELECTION_LOCKED_MESSAGE } from "../sessions/model-overrides.js";
+import { deliveryContextFromSession } from "../utils/delivery-context.read.js";
 import { withAgentSessionModelPatchOrigin } from "./session-model-patch-origin.js";
 import { projectSessionsPatchEntry } from "./sessions-patch.js";
 import {
@@ -664,6 +665,31 @@ describe("gateway sessions patch", () => {
       }),
     );
     expect(entry.responseUsage).toBeUndefined();
+  });
+
+  test("clears an old Home reply route without resetting its session identity", async () => {
+    const store = mainStoreEntry({
+      delivery: {
+        kind: "external",
+        route: { channel: "slack", accountId: "default", target: { to: "user:old-peer" } },
+        context: { channel: "slack", to: "user:old-peer", accountId: "default" },
+        origin: { provider: "slack", to: "user:old-peer", accountId: "default" },
+      },
+    });
+    expect(deliveryContextFromSession(store[MAIN_SESSION_KEY])).toMatchObject({ channel: "slack" });
+    expectPatchError(
+      await runPatch({ store, patch: { key: MAIN_SESSION_KEY, clearDeliveryRoute: true } }),
+      "expectedSessionId",
+    );
+    const entry = expectPatchOk(
+      await runPatch({
+        store,
+        patch: { key: MAIN_SESSION_KEY, expectedSessionId: "sess", clearDeliveryRoute: true },
+      }),
+    );
+    expect(entry.sessionId).toBe("sess");
+    expect(entry.delivery).toEqual({ kind: "none" });
+    expect(deliveryContextFromSession(entry)).toBeUndefined();
   });
 
   test("clears reasoningLevel when patch sets null", async () => {
