@@ -8,6 +8,7 @@ import { resolveSessionThreadInfo } from "../../channels/plugins/session-convers
 import { tryResolveLegacyCompatibilityAgentId } from "../../config/legacy.default-agent-owner.js";
 import { createRuntimeConfigReader } from "../../config/runtime-snapshot.js";
 import { resolvePersistedSessionStoreOwnerForKey } from "../../config/sessions/session-store-owner.js";
+import type { OpenClawConfig } from "../../config/types.js";
 import { shouldResumeParentSubagent } from "../../gateway/session-subagent-resume.js";
 import { resolveGatewaySessionStoreTargetWithStore } from "../../gateway/session-utils-store-lookup.js";
 import { formatErrorMessage } from "../../infra/errors.js";
@@ -29,7 +30,7 @@ import { isCronRunSessionKey, parseAgentSessionKey } from "../../sessions/sessio
 import { recordSessionParticipantBestEffort } from "../../sessions/session-participant-recording.js";
 import { normalizeDeliveryContext } from "../../utils/delivery-context.shared.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../../utils/message-channel.js";
-import { resolveSessionAgentId } from "../agent-scope.js";
+import { resolveAgentConfig, resolveSessionAgentId } from "../agent-scope.js";
 import { bindRequesterYieldCronAuthority } from "../cron-creator-authority-context.js";
 import { resolveNestedAgentLaneForSession } from "../lanes.js";
 import { isTerminalAgentWaitTimeout, waitForAgentRunReply } from "../run-wait.js";
@@ -63,7 +64,11 @@ import {
   PLACED_SESSIONS_SEND_DESCRIPTION,
 } from "./sessions-placement-tool-contract.js";
 import { dispatchSessionsSendFollowup } from "./sessions-send-followup.js";
-import { sendFailure, sendReplyResult } from "./sessions-send-helpers.js";
+import {
+  buildSessionsSendRequesterContext,
+  sendFailure,
+  sendReplyResult,
+} from "./sessions-send-helpers.js";
 import { startSessionsSendReplyFlow } from "./sessions-send-reply-flow.js";
 import { captureSessionsSendResumeCaller, resumeSessionsSendTask } from "./sessions-send-resume.js";
 import {
@@ -82,6 +87,14 @@ import { SessionsSendToolSchema, SessionsSendOutputSchema } from "./sessions-sen
 import type { SessionsSendToolOptions } from "./sessions-send-tool.types.js";
 
 const log = createSubsystemLogger("agents/sessions-send");
+
+function resolveRequesterIdentityName(params: {
+  cfg: OpenClawConfig;
+  requesterAgentId: string;
+}): string | undefined {
+  const name = resolveAgentConfig(params.cfg, params.requesterAgentId)?.identity?.name?.trim();
+  return name || undefined;
+}
 
 export function createSessionsSendTool(opts?: SessionsSendToolOptions): AnyAgentTool {
   const requesterOrigin = normalizeDeliveryContext(opts?.requesterOrigin);
@@ -129,6 +142,8 @@ export function createSessionsSendTool(opts?: SessionsSendToolOptions): AnyAgent
       } catch (err) {
         return sendFailure("forbidden", formatErrorMessage(err));
       }
+
+      const requesterName = resolveRequesterIdentityName({ cfg, requesterAgentId });
 
       const sessionKeyParam = readToolStringParam(params, "sessionKey");
       const labelParam = readToolStringParam(params, "label");
@@ -524,6 +539,10 @@ export function createSessionsSendTool(opts?: SessionsSendToolOptions): AnyAgent
           }
           const sendParams = {
             message: annotateInterSessionPromptText(message, inputProvenance),
+            extraSystemPrompt:
+              requesterIsSubagent || targetIsSubagent
+                ? undefined
+                : buildSessionsSendRequesterContext(requesterName),
             agentId: targetAgentId,
             sessionKey: resolvedKey,
             idempotencyKey,
