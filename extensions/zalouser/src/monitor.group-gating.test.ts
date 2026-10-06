@@ -184,8 +184,15 @@ function installRuntime(params: {
         ...replyPipeline,
         ...turn.dispatcherOptions,
         deliver: async (...args: Parameters<typeof turn.delivery.deliver>) => {
-          const result = await turn.delivery.deliver(...args);
-          await turn.delivery.onDelivered?.(args[0], args[1], result);
+          const info = args[1] ?? { kind: "final" as const };
+          const payload = turn.delivery.preparePayload
+            ? await turn.delivery.preparePayload(args[0], info)
+            : args[0];
+          if (payload === null) {
+            return { visibleReplySent: false };
+          }
+          const result = await turn.delivery.deliver(payload, info);
+          await turn.delivery.onDelivered?.(payload, info, result);
           return result;
         },
         onError: turn.delivery.onError,
@@ -649,6 +656,15 @@ describe("zalouser monitor group mention gating", () => {
       onDeliveryResult: expect.any(Function),
     });
     expect(statusSink).toHaveBeenCalledWith({ lastOutboundAt: expect.any(Number) });
+  });
+
+  it("sanitizes non-final tool replies before custom monitor delivery", async () => {
+    installRuntime({
+      replyKind: "tool",
+      replyPayload: { text: "Done.\n⚠️ 🛠️ `search repos (agent)` failed" },
+    });
+    await processMessageWithDefaults({ message: createDmMessage() });
+    expect(sendMessageZalouserMock).toHaveBeenCalledWith("u-1", "Done.", expect.any(Object));
   });
 
   it.each([
