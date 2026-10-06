@@ -29,7 +29,7 @@ import {
   type GitResult,
 } from "./git.js";
 import { appendNameOrdinal, validateName } from "./name.js";
-import { worktreeOwnerMatches } from "./owner.js";
+import { assertOwnerWorktreeReuse, worktreeOwnerMatches } from "./owner.js";
 import { startWorktreePreparationPhase } from "./preparation-timing.js";
 import { readRegistryWorktrees, readLiveRegistryWorktreeByOwner } from "./registry-read.js";
 import { updateRegistryWorktree } from "./registry.js";
@@ -643,11 +643,7 @@ export async function createOwnedWorktree(
     if (existing && (await worktreePathExists(existing.path))) {
       return await withWorktreeSource(params, async (current) => {
         const validated = await rebindLiveWorktreeRepository(env, existing, current);
-        if (validated.repoRoot !== repository.repoRoot) {
-          throw new Error(
-            `worktree owner ${params.ownerKind ?? "manual"} ${params.ownerId} is already bound to another repository`,
-          );
-        }
+        assertOwnerWorktreeReuse(validated, current, repository.repoRoot);
         current.commitGuard?.();
         return { record: validated, materialized: false };
       });
