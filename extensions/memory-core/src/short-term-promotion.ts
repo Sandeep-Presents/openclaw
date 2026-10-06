@@ -7,8 +7,10 @@ import {
   DEFAULT_PROMOTION_MIN_SCORE,
   DEFAULT_PROMOTION_MIN_UNIQUE_QUERIES,
   type PromotionCandidate,
+  type PromotionExclusion,
   type PromotionWeights,
   type RankShortTermPromotionOptions,
+  type RankShortTermPromotionResult,
   type ShortTermPhaseSignalEntry,
 } from "./short-term-promotion-types.js";
 import {
@@ -87,10 +89,10 @@ function calculatePhaseSignalBoost(
 }
 export async function rankShortTermPromotionCandidates(
   options: RankShortTermPromotionOptions,
-): Promise<PromotionCandidate[]> {
+): Promise<RankShortTermPromotionResult> {
   const workspaceDir = options.workspaceDir.trim();
   if (!workspaceDir) {
-    return [];
+    return { candidates: [], considered: 0, exclusions: [] };
   }
 
   const nowMs = resolveMemoryCoreNowMs(options.nowMs);
@@ -115,13 +117,26 @@ export async function rankShortTermPromotionCandidates(
     readPhaseSignalStore(workspaceDir, nowIso),
   ]);
   const candidates: PromotionCandidate[] = [];
+  const entries = Object.values(store.entries);
+  const exclusions: PromotionExclusion[] = [];
 
-  for (const entry of Object.values(store.entries)) {
+  for (const entry of entries) {
+    const exclude = (reason: PromotionExclusion["reason"], detail?: string) => {
+      exclusions.push({
+        key: entry.key,
+        path: entry.path,
+        snippet: entry.snippet,
+        reason,
+        ...(detail ? { detail } : {}),
+      });
+    };
     if (!isShortTermMemoryPath(entry.path)) {
+      exclude("path");
       continue;
     }
     // Apply rejects these origins too; exclude them before scoring and candidate limits.
     if (isPromotionOriginBlocked(entry)) {
+      exclude("origin", entry.provenance?.originClass);
       continue;
     }
     if (
@@ -129,14 +144,21 @@ export async function rankShortTermPromotionCandidates(
         allowTranscriptTurnSnippet: isShortTermSessionCorpusPath(entry.path),
       })
     ) {
+      exclude("contamination");
       continue;
     }
     if (!includePromoted && entry.promotedAt) {
+      exclude("already promoted", entry.promotedAt);
       continue;
     }
     const { recallCount, dailyCount, groundedCount, recallDays, conceptTags } = entry;
     const signalCount = totalSignalCountForEntry(entry);
-    if (signalCount <= 0 || signalCount < minRecallCount) {
+    if (signalCount <= 0) {
+      exclude("no signal");
+      continue;
+    }
+    if (signalCount < minRecallCount) {
+      exclude("signal threshold", `${signalCount} < ${minRecallCount}`);
       continue;
     }
 
@@ -146,6 +168,7 @@ export async function rankShortTermPromotionCandidates(
     // qualified interactive recalls can satisfy user-query diversity.
     const uniqueQueries = entry.userQueryHashes?.length ?? 0;
     if (uniqueQueries < minUniqueQueries) {
+      exclude("query threshold", `${uniqueQueries} < ${minUniqueQueries}`);
       continue;
     }
     const diversity = clampScore(uniqueQueries / 5);
@@ -154,6 +177,7 @@ export async function rankShortTermPromotionCandidates(
       ? Math.max(0, (nowMs - lastRecalledAtMs) / DAY_MS)
       : 0;
     if (maxAgeDays >= 0 && ageDays > maxAgeDays) {
+      exclude("age threshold", `${ageDays.toFixed(1)}d > ${maxAgeDays}d`);
       continue;
     }
     const recency = clampScore(calculateRecencyComponent(ageDays, halfLifeDays));
@@ -174,6 +198,7 @@ export async function rankShortTermPromotionCandidates(
       phaseBoost;
 
     if (score < minScore) {
+      exclude("score threshold", `${score.toFixed(3)} < ${minScore}`);
       continue;
     }
 
@@ -223,11 +248,12 @@ export async function rankShortTermPromotionCandidates(
   });
 
   const limit = resolveNonNegativeIntegerOption(options.limit, sorted.length);
-  return sorted.slice(0, limit);
+  return { candidates: sorted.slice(0, limit), considered: entries.length, exclusions };
 }
 
 export {
   type PromotionCandidate,
+  type RankShortTermPromotionResult,
   type RepairShortTermPromotionArtifactsResult,
   type ShortTermAuditSummary,
   type ShortTermDreamingStats,
@@ -246,7 +272,11 @@ export {
   readShortTermRecallEntries,
   recordShortTermRecalls,
 } from "./short-term-promotion-record.js";
-export { applyShortTermPromotions } from "./short-term-promotion-apply.js";
+export {
+  applyShortTermPromotions,
+  isDailyFileQuarantined,
+  readDailyFileProvenanceByPath,
+} from "./short-term-promotion-apply.js";
 export {
   auditShortTermPromotionArtifacts,
   removeGroundedShortTermCandidates,
