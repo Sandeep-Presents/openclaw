@@ -23,6 +23,7 @@ import {
   partitionLeadingTaggedReasoning,
   projectCliBackendEvent,
   projectCliTaggedReasoning,
+  retainedToolChars,
 } from "./cli-output-events.js";
 import * as cliOutputLifecycle from "./cli-output-lifecycle.js";
 import {
@@ -47,6 +48,7 @@ import {
 import { appendCliResultText } from "./cli-output-results.js";
 import {
   CLI_STREAM_JSON_OUTPUT_LIMITS,
+  CLI_STREAM_JSON_RETAINED_ENTRY_CHARS,
   frameBoundedCliJsonlChunk,
   streamJsonOutputLimitErrorText,
 } from "./cli-output-stream-limits.js";
@@ -76,9 +78,10 @@ export function createCliJsonlStreamingParser(params: CliJsonlStreamingParserOpt
   let diagnosticUsage: CliUsage | undefined;
   let output: CliOutput | null = null;
   let parseErrorText = "";
-  let rawChars = 0;
   let rawLines = 0;
   const texts: string[] = [];
+  let textsChars = 0;
+  let countedTexts = 0;
   let sawCustomJsonlEvent = false;
   let sawGeminiStructuredOutput = false;
   let sawTerminalResult = false;
@@ -199,14 +202,41 @@ export function createCliJsonlStreamingParser(params: CliJsonlStreamingParserOpt
     ({ assistantText, customThinkingText, sessionId, usage, output, sawCustomJsonlEvent } = state);
   };
 
-  const accountClaudeJsonlLine = (lineChars: number): boolean => {
-    rawChars += lineChars + 1;
-    if (rawChars <= outputLimits.maxTurnRawChars) {
-      return true;
+  // The budget bounds what the parser holds, not what streams through it: wire
+  // envelopes, partial-message frames and tool results are consumed and dropped,
+  // so a long turn costs no more memory than a short one with the same reply.
+  // Runaway turns are bounded by the turn timeout and the model's output limits.
+  const retainedChars = () => {
+    while (countedTexts < texts.length) {
+      textsChars += texts[countedTexts]!.length + CLI_STREAM_JSON_RETAINED_ENTRY_CHARS;
+      countedTexts += 1;
     }
-    parseErrorText = streamJsonOutputLimitErrorText("raw", outputLimits.maxTurnRawChars);
+    // The reply is held in a fixed set of views (streamed text, the current
+    // message, the result); each character counts once, so any reply the old
+    // wire budget accepted still fits. Per-block thinking likewise mirrors
+    // emittedText.
+    const replyChars = Math.max(
+      assistantText.length + pendingClaudeText.length + currentTaggedReasoningText.length,
+      currentClaudeMessageText.length,
+      output?.text.length ?? 0,
+      textsChars,
+    );
+    return (
+      replyChars +
+      (output?.textParts?.length ?? 0) * CLI_STREAM_JSON_RETAINED_ENTRY_CHARS +
+      thinkingTracker.emittedText.length +
+      thinkingTracker.streamedByIndex.size * CLI_STREAM_JSON_RETAINED_ENTRY_CHARS +
+      customThinkingText.length +
+      retainedToolChars(toolTracker)
+    );
+  };
+
+  const enforceRetainedBudget = () => {
+    if (parseErrorText || retainedChars() <= outputLimits.maxRetainedChars) {
+      return;
+    }
+    parseErrorText = streamJsonOutputLimitErrorText("retained", outputLimits.maxRetainedChars);
     lineBuffer.pending = "";
-    return false;
   };
 
   const observeSessionId = (parsed: Record<string, unknown>) => {
@@ -217,7 +247,7 @@ export function createCliJsonlStreamingParser(params: CliJsonlStreamingParserOpt
     }
   };
 
-  const handleCustomJsonlLine = (line: string, rawLine: string): boolean => {
+  const handleCustomJsonlLine = (line: string): boolean => {
     const lifecycle = cliOutputLifecycle.parseCliBackendLifecycleLine({
       line,
       backendId: params.providerId,
@@ -228,9 +258,6 @@ export function createCliJsonlStreamingParser(params: CliJsonlStreamingParserOpt
       if ("errorText" in lifecycle) {
         parseErrorText = lifecycle.errorText;
       } else {
-        if (claudeStreamJson && !accountClaudeJsonlLine(rawLine.length)) {
-          return true;
-        }
         for (const parsed of decodeCliRecords(line)) {
           observeSessionId(parsed);
         }
@@ -258,9 +285,6 @@ export function createCliJsonlStreamingParser(params: CliJsonlStreamingParserOpt
     }
     if (parsed == null) {
       return false;
-    }
-    if (claudeStreamJson && !accountClaudeJsonlLine(rawLine.length)) {
-      return true;
     }
     for (const event of Array.isArray(parsed) ? parsed : [parsed]) {
       if (event.kind === "result") {
@@ -592,50 +616,28 @@ export function createCliJsonlStreamingParser(params: CliJsonlStreamingParserOpt
     if (!line && !claudeStreamJson) {
       return;
     }
+    // Counted only so getOutput() can tell "no output" from "no result".
     rawLines += 1;
-    if (rawLines > outputLimits.maxTurnLines) {
-      parseErrorText = streamJsonOutputLimitErrorText("lines", outputLimits.maxTurnLines);
-      lineBuffer.pending = "";
-      return;
-    }
     if (!line) {
-      accountClaudeJsonlLine(rawLine.length);
       return;
     }
-    if (handleCustomJsonlLine(line, rawLine)) {
-      return;
-    }
-    const parsedRecords = decodeCliRecords(line);
-    if (claudeStreamJson) {
-      const normalized =
-        parsedRecords.length === 1
-          ? normalizeClaudeCliStreamJsonRecord(parsedRecords[0]!)
-          : undefined;
-      // Exempt actual media bytes only; JSON serialization must not erase wire whitespace.
-      const retainedChars = normalized
-        ? Math.max(normalized.line.length, rawLine.length - normalized.omittedRawChars)
-        : rawLine.length;
-      if (!accountClaudeJsonlLine(retainedChars)) {
-        return;
+    if (!handleCustomJsonlLine(line)) {
+      const parsedRecords = decodeCliRecords(line);
+      if (claudeStreamJson && parsedRecords.length === 1) {
+        // Drops echoed media bytes before tool results reach their consumers.
+        normalizeClaudeCliStreamJsonRecord(parsedRecords[0]!);
+      }
+      for (const parsed of parsedRecords) {
+        handleParsedRecord(parsed);
       }
     }
-    for (const parsed of parsedRecords) {
-      handleParsedRecord(parsed);
-    }
+    enforceRetainedBudget();
   };
 
   return {
     push(chunk: string) {
       if (!chunk || parseErrorText) {
         return;
-      }
-      if (!claudeStreamJson) {
-        rawChars += chunk.length;
-        if (rawChars > outputLimits.maxTurnRawChars) {
-          parseErrorText = streamJsonOutputLimitErrorText("raw", outputLimits.maxTurnRawChars);
-          lineBuffer.pending = "";
-          return;
-        }
       }
       if (
         !frameBoundedCliJsonlChunk(lineBuffer, chunk, outputLimits.maxPendingLineChars, (line) => {

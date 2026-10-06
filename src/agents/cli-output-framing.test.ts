@@ -126,7 +126,7 @@ describe("createCliJsonlStreamingParser framing", () => {
   it.each([
     { name: "echoed media bytes", padded: false },
     { name: "surrounding raw whitespace", padded: true },
-  ])("counts $name claimed by Claude plugin parsers before dispatch", ({ padded }) => {
+  ])("does not retain $name claimed by Claude plugin parsers", ({ padded }) => {
     const pluginLines: string[] = [];
     const assistantDeltas: string[] = [];
     const parser = createCliJsonlStreamingParser({
@@ -164,11 +164,11 @@ describe("createCliJsonlStreamingParser framing", () => {
     parser.push(`${rawLine}\n${rawLine}\n`);
 
     expect(pluginLines).toEqual([semanticLine, semanticLine]);
-    expect(assistantDeltas).toEqual(["claimed"]);
-    expect(parser.getErrorText()).toContain("JSONL output exceeded");
+    expect(assistantDeltas).toEqual(["claimed", "claimed"]);
+    expect(parser.getErrorText()).toBeNull();
   });
 
-  it("counts actual blank Claude frames without invoking hooks or inventing a finish frame", () => {
+  it("passes blank Claude frames without invoking hooks or inventing a finish frame", () => {
     const parseJsonlEvent = vi.fn(() => null);
     const createParser = () =>
       createCliJsonlStreamingParser({
@@ -184,10 +184,10 @@ describe("createCliJsonlStreamingParser framing", () => {
     expect(completeParser.getErrorText()).toBeNull();
     expect(parseJsonlEvent).not.toHaveBeenCalled();
 
-    const overflowParser = createParser();
-    overflowParser.push("\n".repeat(20_001));
+    const longParser = createParser();
+    longParser.push("\n".repeat(200_001));
 
-    expect(overflowParser.getErrorText()).toContain("exceeded 20000 lines");
+    expect(longParser.getErrorText()).toBeNull();
     expect(parseJsonlEvent).not.toHaveBeenCalled();
   });
 
@@ -221,7 +221,7 @@ describe("createCliJsonlStreamingParser framing", () => {
           },
         }).replace('"message":', `"message":${" ".repeat(4_300_000)}`),
     },
-  ])("charges $name against the Claude raw-output budget", ({ createLine }) => {
+  ])("does not retain $name across a Claude turn", ({ createLine }) => {
     const parser = createCliJsonlStreamingParser({
       backend: { command: "claude", output: "jsonl", jsonlDialect: "claude-stream-json" },
       providerId: "claude-cli",
@@ -229,9 +229,11 @@ describe("createCliJsonlStreamingParser framing", () => {
     });
     const line = createLine();
 
-    parser.push(`${line}\n${line}\n`);
+    parser.push(`${line}\n${line}\n${JSON.stringify({ type: "result", result: "done" })}\n`);
+    parser.finish();
 
-    expect(parser.getErrorText()).toContain("JSONL output exceeded 8388608 characters");
+    expect(parser.getErrorText()).toBeNull();
+    expect(parser.getOutput()?.text).toBe("done");
   });
 
   it("normalizes empty Claude image data without treating zero omitted bytes as unchanged", () => {
@@ -419,7 +421,7 @@ describe("createCliJsonlStreamingParser framing", () => {
     expect(parser.getErrorText()).toBeNull();
   });
 
-  it("still enforces raw Claude line and retained-text limits", () => {
+  it("still enforces the raw Claude line limit", () => {
     const createParser = () =>
       createCliJsonlStreamingParser({
         backend: { command: "claude", output: "jsonl", jsonlDialect: "claude-stream-json" },
@@ -458,9 +460,11 @@ describe("createCliJsonlStreamingParser framing", () => {
     growingPartialLineParser.push("a".repeat(4_300_000));
     expect(growingPartialLineParser.getErrorText()).toContain("JSONL line exceeded");
 
-    const oversizedTextParser = createParser();
+    // Tool results and bare records stream through: the parser hands them on
+    // and keeps none of them, so their volume is not a turn budget.
+    const largeToolResultsParser = createParser();
     for (const toolCallId of ["first", "second"]) {
-      oversizedTextParser.push(
+      largeToolResultsParser.push(
         `${JSON.stringify({
           type: "user",
           message: {
@@ -475,11 +479,8 @@ describe("createCliJsonlStreamingParser framing", () => {
         })}\n`,
       );
     }
-    expect(oversizedTextParser.getErrorText()).toContain("JSONL output exceeded");
-
-    const excessiveLinesParser = createParser();
-    excessiveLinesParser.push("{}\n".repeat(20_001));
-    expect(excessiveLinesParser.getErrorText()).toContain("exceeded 20000 lines");
+    largeToolResultsParser.push("{}\n".repeat(20_001));
+    expect(largeToolResultsParser.getErrorText()).toBeNull();
   });
 
   it.each([

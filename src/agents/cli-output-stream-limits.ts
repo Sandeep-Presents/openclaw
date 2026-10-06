@@ -3,13 +3,20 @@
 // budget; the limits are process constants, not per-backend configuration.
 import type { CliStreamJsonOutputLimits } from "./cli-output-contracts.js";
 
-const CLI_STREAM_JSON_DEFAULT_MAX_TURN_RAW_CHARS = 8 * 1024 * 1024;
-const CLI_STREAM_JSON_DEFAULT_MAX_TURN_LINES = 20_000;
+// Both limits bound memory, not throughput. A turn may stream any number of
+// lines (one per token under --include-partial-messages) for as long as the run
+// timeout allows; only one raw line in flight and the state the parser keeps
+// (reply text, thinking, tool inputs and IDs) are capped.
+const CLI_STREAM_JSON_MAX_PENDING_LINE_CHARS = 8 * 1024 * 1024;
+const CLI_STREAM_JSON_MAX_RETAINED_CHARS = 8 * 1024 * 1024;
 export const CLI_STREAM_JSON_OUTPUT_LIMITS = Object.freeze({
-  maxTurnRawChars: CLI_STREAM_JSON_DEFAULT_MAX_TURN_RAW_CHARS,
-  maxPendingLineChars: CLI_STREAM_JSON_DEFAULT_MAX_TURN_RAW_CHARS,
-  maxTurnLines: CLI_STREAM_JSON_DEFAULT_MAX_TURN_LINES,
+  maxPendingLineChars: CLI_STREAM_JSON_MAX_PENDING_LINE_CHARS,
+  maxRetainedChars: CLI_STREAM_JSON_MAX_RETAINED_CHARS,
 } satisfies CliStreamJsonOutputLimits);
+
+// Approximate cost of one array, Map or Set slot. Every entry a retained
+// collection holds pays it on top of its strings, so empty entries are not free.
+export const CLI_STREAM_JSON_RETAINED_ENTRY_CHARS = 64;
 
 /** Frames arbitrary stdout chunks while bounding each individual raw JSONL line. */
 export function frameBoundedCliJsonlChunk(
@@ -40,15 +47,9 @@ export function frameBoundedCliJsonlChunk(
   return true;
 }
 
-export function streamJsonOutputLimitErrorText(
-  kind: "raw" | "line" | "lines",
-  limit: number,
-): string {
+export function streamJsonOutputLimitErrorText(kind: "line" | "retained", limit: number): string {
   if (kind === "line") {
     return `CLI JSONL line exceeded ${limit} characters; refusing to parse output.`;
   }
-  if (kind === "lines") {
-    return `CLI JSONL output exceeded ${limit} lines; refusing to parse output.`;
-  }
-  return `CLI JSONL output exceeded ${limit} characters; refusing to parse output.`;
+  return `CLI JSONL output retained more than ${limit} characters of reply, thinking and tool state in one turn; refusing to parse output.`;
 }

@@ -23,12 +23,15 @@ import {
   isGeminiStreamJsonDialect,
   supportsCliJsonlToolEvents,
 } from "./cli-output-records.js";
+import { CLI_STREAM_JSON_RETAINED_ENTRY_CHARS } from "./cli-output-stream-limits.js";
 
 type PendingToolUse = {
   toolCallId: string;
   name: string;
   kind: CliToolUseStartDelta["kind"];
   inputJsonParts: string[];
+  /** Retained input size: streamed `input_json_delta` text plus any start-block input. */
+  inputChars: number;
   /**
    * Complete input carried on `content_block_start`. Some CLI backends send the
    * whole tool input there and never emit `input_json_delta` chunks, so without
@@ -40,13 +43,71 @@ type PendingToolUse = {
 
 type ToolUseTracker = ReturnType<typeof createToolUseTracker>;
 
+/**
+ * Characters of tool state the tracker holds: open blocks (ID, name and input
+ * still being assembled), plus the IDs and names kept for the whole turn to
+ * deduplicate starts and results. A stopped block's charge moves to the latter.
+ */
+export function retainedToolChars(tracker: ToolUseTracker): number {
+  let chars = tracker.idChars;
+  for (const pending of tracker.pendingByIndex.values()) {
+    chars +=
+      pending.toolCallId.length +
+      pending.name.length +
+      pending.inputChars +
+      CLI_STREAM_JSON_RETAINED_ENTRY_CHARS;
+  }
+  return chars;
+}
+
 export function createToolUseTracker() {
   return {
     pendingByIndex: new Map<number, PendingToolUse>(),
     nameById: new Map<string, string>(),
     startedIds: new Set<string>(),
     resultDeliveredIds: new Set<string>(),
+    idChars: 0,
   };
+}
+
+function rememberToolId(tracker: ToolUseTracker, ids: Set<string>, toolCallId: string): void {
+  ids.add(toolCallId);
+  tracker.idChars += toolCallId.length + CLI_STREAM_JSON_RETAINED_ENTRY_CHARS;
+}
+
+function rememberToolName(tracker: ToolUseTracker, toolCallId: string, name: string): void {
+  const previous = tracker.nameById.get(toolCallId);
+  tracker.idChars +=
+    previous === undefined
+      ? toolCallId.length + name.length + CLI_STREAM_JSON_RETAINED_ENTRY_CHARS
+      : name.length - previous.length;
+  tracker.nameById.set(toolCallId, name);
+}
+
+/** Serialized-size estimate of a parsed JSON value; iterative to stay stack-safe. */
+function estimateJsonChars(value: unknown): number {
+  let chars = 0;
+  const pending: unknown[] = [value];
+  while (pending.length > 0) {
+    const node = pending.pop();
+    if (typeof node === "string") {
+      chars += node.length + 2;
+    } else if (Array.isArray(node)) {
+      chars += node.length + 2;
+      for (const item of node) {
+        pending.push(item);
+      }
+    } else if (isRecord(node)) {
+      chars += 2;
+      for (const [key, item] of Object.entries(node)) {
+        chars += key.length + 4;
+        pending.push(item);
+      }
+    } else {
+      chars += String(node).length;
+    }
+  }
+  return chars;
 }
 
 function emitToolStartOnce(
@@ -61,8 +122,8 @@ function emitToolStartOnce(
   if (tracker.startedIds.has(toolCallId)) {
     return;
   }
-  tracker.startedIds.add(toolCallId);
-  tracker.nameById.set(toolCallId, name);
+  rememberToolId(tracker, tracker.startedIds, toolCallId);
+  rememberToolName(tracker, toolCallId, name);
   onToolUseStart?.({ toolCallId, name, kind, args });
 }
 
@@ -77,7 +138,7 @@ function emitToolResultOnce(
   if (tracker.resultDeliveredIds.has(toolCallId)) {
     return;
   }
-  tracker.resultDeliveredIds.add(toolCallId);
+  rememberToolId(tracker, tracker.resultDeliveredIds, toolCallId);
   onToolResult?.({
     toolCallId,
     name: tracker.nameById.get(toolCallId) ?? "",
@@ -163,7 +224,7 @@ export function projectCliBackendEvent(params: {
   }
   if (event.kind === "toolResult") {
     if (event.name) {
-      params.toolTracker.nameById.set(event.toolCallId, event.name);
+      rememberToolName(params.toolTracker, event.toolCallId, event.name);
     }
     emitToolResultOnce(
       params.toolTracker,
@@ -281,7 +342,9 @@ export function dispatchClaudeCliStreamingToolEvent(params: {
             name,
             kind: block.type,
             inputJsonParts: [],
-            ...(isRecord(block.input) ? { blockInput: block.input } : {}),
+            ...(isRecord(block.input)
+              ? { blockInput: block.input, inputChars: estimateJsonChars(block.input) }
+              : { inputChars: 0 }),
           });
         }
       } else if (isClaudeAssistantToolResultBlockType(block.type)) {
@@ -295,7 +358,12 @@ export function dispatchClaudeCliStreamingToolEvent(params: {
       isRecord(event.delta)
     ) {
       if (event.delta.type === "input_json_delta" && typeof event.delta.partial_json === "string") {
-        tracker.pendingByIndex.get(event.index)?.inputJsonParts.push(event.delta.partial_json);
+        const pending = tracker.pendingByIndex.get(event.index);
+        if (pending) {
+          pending.inputJsonParts.push(event.delta.partial_json);
+          pending.inputChars +=
+            event.delta.partial_json.length + CLI_STREAM_JSON_RETAINED_ENTRY_CHARS;
+        }
       }
       return;
     }

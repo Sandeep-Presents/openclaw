@@ -87,9 +87,10 @@ export type CliStreamingDelta = {
 };
 
 export type CliStreamJsonOutputLimits = {
-  maxTurnRawChars: number;
+  /** One raw JSONL line still being framed. */
   maxPendingLineChars: number;
-  maxTurnLines: number;
+  /** Reply text, thinking and tool input the parser holds for the turn. */
+  maxRetainedChars: number;
 };
 
 /** Incremental thinking text emitted while parsing a streaming CLI response. */
