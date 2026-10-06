@@ -809,6 +809,26 @@ final class OpenClawSnapshotUITests: XCTestCase {
         self.attachScreenshot(named: "existing-session-latest-output")
     }
 
+    func testTaskListShowsRefreshClearAndDismissButtons() throws {
+        self.launchApp(
+            for: Self.chatScreenshotTarget,
+            additionalArguments: ["--openclaw-progress-card-fixture"])
+        let app = try XCTUnwrap(self.app)
+        let card = app.buttons.matching(NSPredicate(
+            format: "label BEGINSWITH %@", "Plan, 1 of 3 steps done")).firstMatch
+        XCTAssertTrue(card.waitForExistence(timeout: 8))
+        self.attachScreenshot(named: "task-list-card")
+
+        for action in ["refresh", "clear-saved", "dismiss"] {
+            XCTAssertTrue(
+                app.buttons["chat-progress-card-\(action)"].exists,
+                "Task list has no \(action) button")
+        }
+        app.buttons["chat-progress-card-dismiss"].tap()
+        XCTAssertTrue(card.waitForNonExistence(timeout: 3))
+        self.attachScreenshot(named: "task-list-dismissed")
+    }
+
     func testChatPresentationInLightAppearance() throws {
         try XCTSkipIf(UIDevice.current.userInterfaceIdiom != .phone, "Phone chat proof only")
         self.launchApp(
