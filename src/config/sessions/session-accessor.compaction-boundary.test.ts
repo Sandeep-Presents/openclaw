@@ -354,20 +354,22 @@ describe("persistCompactionBoundaryWithSessionEntrySync", () => {
       );
       const before = loadTranscriptEventsSync(scope);
 
+      let reads: ReturnType<typeof trackSqliteStatementExecutions> | undefined;
       let entryRows = 0;
-      const entryId = withSessionCompactionPersistence(
-        manager,
-        (prepared) => {
-          const database = openOpenClawAgentDatabase(
-            toDatabaseOptions(resolveSqliteTranscriptScope(scope)),
-          );
-          const reads = trackSqliteStatementExecutions(database.db, ["entry"], (sql) =>
-            isSessionNodePayloadSelect(sql) && sql.includes('where "session_key" = ?')
-              ? "entry"
-              : null,
-          );
-          try {
-            return persistCompactionBoundaryWithSessionEntrySync(
+      let entryId: string;
+      try {
+        entryId = withSessionCompactionPersistence(
+          manager,
+          (prepared) => {
+            const database = openOpenClawAgentDatabase(
+              toDatabaseOptions(resolveSqliteTranscriptScope(scope)),
+            );
+            reads = trackSqliteStatementExecutions(database.db, ["entry"], (sql) =>
+              isSessionNodePayloadSelect(sql) && sql.includes('where "session_key" = ?')
+                ? "entry"
+                : null,
+            );
+            const committed = persistCompactionBoundaryWithSessionEntrySync(
               {
                 ...scope,
                 expectedLifecycleRevision: expected.lifecycleRevision,
@@ -382,13 +384,15 @@ describe("persistCompactionBoundaryWithSessionEntrySync", () => {
                 },
               },
             );
-          } finally {
-            entryRows = reads.rowCounts.entry;
-            reads.restore();
-          }
-        },
-        () => manager.appendCompaction("summary", keptId, 100),
-      );
+            entryRows = reads?.rowCounts.entry ?? 0;
+            reads?.restore();
+            return committed;
+          },
+          () => manager.appendCompaction("summary", keptId, 100),
+        );
+      } finally {
+        reads?.restore();
+      }
 
       expect(loadTranscriptEventsSync(scope)).toEqual([
         ...before,

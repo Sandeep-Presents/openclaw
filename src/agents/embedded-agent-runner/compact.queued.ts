@@ -34,8 +34,16 @@ import { materializePreparedRuntimeModel } from "../runtime-plan/materialize-mod
 import type { SandboxContext } from "../sandbox/types.js";
 import { beginForegroundSessionMaintenance } from "../session-maintenance/coordinator.js";
 import { prepareSessionPlacementSandbox } from "../session-placement-admission.js";
+import {
+  lockedCompactionRuntimeFailure,
+  MANUAL_COMPACTION_ACTIVE_RUN_REASON,
+} from "./compact-reasons.js";
+import { prepareManualTranscriptByteCompaction } from "./compact.accounting.js";
 import { deferOwningContextEngineBudgetCompaction } from "./compact.deferred-context-engine.js";
-import { runForegroundCompactionWork } from "./compact.foreground-work.js";
+import {
+  resolveManualCompactionActiveRunSessionId,
+  runForegroundCompactionWork,
+} from "./compact.foreground-work.js";
 import { compactNativeCliSession } from "./compact.js";
 import {
   createQueuedCompactionAbortedResult,
@@ -62,13 +70,7 @@ import { log } from "./logger.js";
 import { resolveTieredModel } from "./model-resolution.js";
 import { resolveModelAsync } from "./model.js";
 import type { EmbeddedAgentQueueHandle } from "./run-state.js";
-import {
-  clearActiveEmbeddedRun,
-  isEmbeddedAgentRunHandleActive,
-  resolveActiveEmbeddedRunHandleSessionId,
-  resolveActiveEmbeddedRunHandleSessionIdBySessionFile,
-  setActiveEmbeddedRun,
-} from "./runs.js";
+import { clearActiveEmbeddedRun, setActiveEmbeddedRun } from "./runs.js";
 import { resolveTranscriptBytePreflightAuthority } from "./transcript-byte-preflight-authority.js";
 import type { EmbeddedAgentCompactResult } from "./types.js";
 
@@ -76,20 +78,6 @@ type QueuedCompactionParams = CompactEmbeddedAgentSessionParams & {
   sessionTarget: SessionTranscriptRuntimeTarget;
   sandbox?: SandboxContext | null;
 };
-
-function lockedCompactionRuntimeFailure(runtime?: string): EmbeddedAgentCompactResult {
-  return {
-    ok: false,
-    compacted: false,
-    reason: runtime
-      ? `Model selection is locked to native agent harness "${runtime}", but native compaction is unavailable.`
-      : "Model selection is locked but the persisted agent harness is unavailable.",
-    failure: { reason: "model_selection_locked" },
-  };
-}
-
-const MANUAL_COMPACTION_ACTIVE_RUN_REASON =
-  "manual compaction unavailable while another embedded run is active";
 
 function assertQueuedCompactionPreparationActive(
   params: CompactEmbeddedAgentSessionParams,
@@ -99,16 +87,6 @@ function assertQueuedCompactionPreparationActive(
   // so a cancelled or replaced owner cannot continue expensive setup.
   params.abortSignal?.throwIfAborted();
   host.assertActive?.();
-}
-
-function resolveManualCompactionActiveRunSessionId(
-  params: CompactEmbeddedAgentSessionParams,
-): string | undefined {
-  return (
-    (isEmbeddedAgentRunHandleActive(params.sessionId) ? params.sessionId : undefined) ??
-    (params.sessionKey ? resolveActiveEmbeddedRunHandleSessionId(params.sessionKey) : undefined) ??
-    resolveActiveEmbeddedRunHandleSessionIdBySessionFile(params.sessionFile)
-  );
 }
 
 /**
@@ -140,10 +118,6 @@ export async function compactEmbeddedAgentSession(
       ...input,
       ...(signals.length > 0 ? { abortSignal: AbortSignal.any(signals) } : {}),
     };
-    const projectedConfig = projectCodexHostTranscriptBytePreflightConfig(
-      params.config,
-      Boolean(host.transcriptBytePreflightHarness),
-    );
     const contextEngineAgentId =
       normalizeOptionalString(params.contextEngineAgentId) ??
       normalizeOptionalString(params.agentId);
@@ -170,11 +144,32 @@ export async function compactEmbeddedAgentSession(
         lifecycleRevision: entry?.lifecycleRevision,
         activeWriterRunId: entry?.activeWriterRunId,
       };
+      const agentHarnessId = resolveSessionPinnedHarnessId(entry) ?? params.agentHarnessId;
+      const prepared = await prepareManualTranscriptByteCompaction(
+        { ...params, agentHarnessId },
+        host,
+        runtimeTarget,
+        entry,
+        resolveCompactionRuntimeSelection({
+          ...params,
+          ...runtimeTarget,
+          modelId: params.model,
+          modelSelectionLocked: entry?.modelSelectionLocked ?? params.modelSelectionLocked,
+          boundHarnessRuntime: agentHarnessId,
+          preparedRuntimePlan: params.runtimePlan,
+          allowPluginNormalization: false,
+        }).selectedHarnessRuntime,
+      );
+      assertQueuedCompactionPreparationActive(params, host);
+      const projectedConfig = projectCodexHostTranscriptBytePreflightConfig(
+        prepared.params.config,
+        Boolean(prepared.host.transcriptBytePreflightHarness),
+      );
       const resolvedParams = {
-        ...params,
+        ...prepared.params,
         config: projectedConfig,
         sessionEntry: entry ? projectPublicSessionEntry(entry) : undefined,
-        agentHarnessId: resolveSessionPinnedHarnessId(entry) ?? params.agentHarnessId,
+        agentHarnessId,
         modelSelectionLocked: entry?.modelSelectionLocked ?? params.modelSelectionLocked,
         agentId: runtimeTarget.agentId,
         sessionId: runtimeTarget.sessionId,
@@ -189,7 +184,7 @@ export async function compactEmbeddedAgentSession(
           compactEmbeddedAgentSessionImpl(
             resolvedParams,
             expectedEntry,
-            host,
+            prepared.host,
             contextEngineSessionKey,
           ),
         );
@@ -231,7 +226,7 @@ export async function compactEmbeddedAgentSession(
           compactEmbeddedAgentSessionImpl(
             activeParams,
             expectedEntry,
-            host,
+            prepared.host,
             contextEngineSessionKey,
           ),
         );
@@ -627,7 +622,9 @@ async function compactResolvedContextEngine(
       isRecoverableNativeHarnessBindingFailure(harnessResult)
     )
   ) {
-    return harnessResult ?? lockedCompactionRuntimeFailure(selectedHarnessRuntime);
+    return harnessResult
+      ? { ...harnessResult, compactionKind: "native-harness" }
+      : lockedCompactionRuntimeFailure(selectedHarnessRuntime);
   }
   if (harnessResult) {
     if (!isRecoverableNativeHarnessBindingFailure(harnessResult)) {
