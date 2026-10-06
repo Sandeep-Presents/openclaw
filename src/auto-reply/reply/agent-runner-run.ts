@@ -378,6 +378,20 @@ export async function runReplyAgent(
 
   if (activeRunQueueAction === "enqueue-followup") {
     bindQueueDisposition();
+    followupRun.typing = typing;
+    // The queued item, not this dispatch, ends the wait: settlement covers
+    // execution, cancellation, and removal from the queue.
+    const queuedLifecycle = followupRun.turnAdoptionLifecycle;
+    if (queuedLifecycle) {
+      const onSettled = queuedLifecycle.onSettled;
+      queuedLifecycle.onSettled = () => {
+        try {
+          onSettled?.();
+        } finally {
+          typing.cleanup();
+        }
+      };
+    }
     const enqueued = enqueueFollowupRun(
       queueKey,
       followupRun,
@@ -429,6 +443,9 @@ export async function runReplyAgent(
     await touchActiveSessionEntry();
     if (queuedBehindActiveRun) {
       await typingSignals.signalToolStart();
+      if (queuedLifecycle && typing.isActive()) {
+        opts?.onTypingHandoff?.();
+      }
     } else {
       typing.cleanup();
     }
