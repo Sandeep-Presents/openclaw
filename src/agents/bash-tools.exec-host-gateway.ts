@@ -18,7 +18,6 @@ import {
   type ExecApprovalUsageAuthorization,
   resolveExecApprovalAllowedDecisions,
   buildEnforcedShellCommand,
-  evaluateShellAllowlistWithAuthorization,
   hasDurableExecApproval,
   hasExactCommandDurableExecApproval,
   minSecurity,
@@ -46,15 +45,9 @@ import { hasPosixShellStartupBeforeInlineCommand } from "../infra/exec-wrapper-r
 import { LruCache } from "../infra/lru-cache.js";
 import {
   prepareSystemRunMutableFileBinding,
-  revalidateSystemRunMutableFileBinding,
   type SystemRunMutableFileBinding,
 } from "../infra/system-run-approval-binding.js";
-import {
-  APPROVAL_CWD_DRIFT_DENIED_MESSAGE,
-  type ApprovedCwdSnapshot,
-  captureApprovedCwdSnapshotSync,
-  revalidateApprovedCwdSnapshot,
-} from "../infra/system-run-cwd-binding.js";
+import { captureApprovedCwdSnapshotSync } from "../infra/system-run-cwd-binding.js";
 import {
   GatewayDrainingError,
   runWithGatewayIndependentRootWorkAdmission,
@@ -69,6 +62,14 @@ import {
   registerExecApprovalRequestForHostOrThrow,
 } from "./bash-tools.exec-approval-request.js";
 import { prepareCronStandingGrantConsumption } from "./bash-tools.exec-cron-grant.js";
+import { evaluateGatewayShellAllowlist } from "./bash-tools.exec-host-gateway-allowlist.js";
+import {
+  buildGatewayExecApprovalDeniedToolResult,
+  chainRevalidations,
+  createGatewaySkillBinAuthorityRecheck,
+  resolveGatewayExecApprovalDrift,
+  revalidateGatewayExecApprovalBinding,
+} from "./bash-tools.exec-host-gateway-revalidation.js";
 import type {
   ProcessGatewayAllowlistParams,
   ProcessGatewayAllowlistResult,
@@ -87,10 +88,8 @@ import type {
   ExecApprovalFollowupFactory,
   ExecApprovalFollowupOutcome,
   ExecToolApprovalReview,
-  ExecToolDetails,
 } from "./bash-tools.exec-types.js";
 import { abortable } from "./embedded-agent-runner/run/abortable.js";
-import type { AgentToolResult } from "./runtime/index.js";
 
 const ONE_SHOT_ALLOW_ALWAYS: AllowAlwaysPersistenceDecision = {
   kind: "one-shot",
@@ -291,66 +290,6 @@ function buildGatewayExecApprovalFollowupSummary(params: {
   return appendExecTimeoutRetryGuidance(summary, params.outcome.exitReason);
 }
 
-function buildGatewayExecApprovalDeniedToolResult(params: {
-  approvalId?: string;
-  deniedReason: string;
-  command: string;
-  cwd: string;
-}): AgentToolResult<ExecToolDetails> {
-  const denialContext = params.approvalId
-    ? `gateway id=${params.approvalId}, ${params.deniedReason}`
-    : params.deniedReason;
-  const text = `Exec denied (${denialContext}): ${params.command}`;
-  return {
-    content: [{ type: "text", text }],
-    details: {
-      status: "failed",
-      exitCode: null,
-      durationMs: 0,
-      aggregated: text,
-      timedOut: params.deniedReason.includes("timeout"),
-      cwd: params.cwd,
-    },
-  };
-}
-
-async function resolveGatewayExecApprovalDrift(params: {
-  binding?: SystemRunMutableFileBinding;
-  cwdSnapshot?: ApprovedCwdSnapshot;
-  cwd: string;
-}): Promise<string | undefined> {
-  if (params.binding) {
-    const current = await revalidateSystemRunMutableFileBinding({
-      binding: params.binding,
-      cwd: params.cwd,
-    });
-    if (!current.ok) {
-      return current.message;
-    }
-  }
-  if (params.cwdSnapshot && !revalidateApprovedCwdSnapshot(params.cwdSnapshot)) {
-    return APPROVAL_CWD_DRIFT_DENIED_MESSAGE;
-  }
-  return undefined;
-}
-
-/** Rechecks a gateway approval binding at the caller's final spawn boundary. */
-async function revalidateGatewayExecApprovalBinding(params: {
-  binding?: SystemRunMutableFileBinding;
-  cwdSnapshot?: ApprovedCwdSnapshot;
-  command: string;
-  cwd: string;
-}): Promise<AgentToolResult<ExecToolDetails> | undefined> {
-  const deniedReason = await resolveGatewayExecApprovalDrift(params);
-  return deniedReason
-    ? buildGatewayExecApprovalDeniedToolResult({
-        deniedReason,
-        command: params.command,
-        cwd: params.cwd,
-      })
-    : undefined;
-}
-
 async function resolveGatewayExecApprovalFollowupText(params: {
   approvalFollowup?: ExecApprovalFollowupFactory;
   approvalId: string;
@@ -405,18 +344,21 @@ export async function processGatewayAllowlist(
     agentId: params.agentId,
   });
   const fallbackSecurity = minSecurity(hostSecurity, askFallback);
-  const allowlistEval = await evaluateShellAllowlistWithAuthorization({
-    command: params.command,
-    allowlist: approvals.allowlist,
-    safeBins: params.safeBins,
-    safeBinProfiles: params.safeBinProfiles,
-    cwd: params.workdir,
-    env: params.env,
-    platform: process.platform,
-    trustedSafeBinDirs: params.trustedSafeBinDirs,
-  });
+  const allowlistEval = await evaluateGatewayShellAllowlist(
+    params,
+    approvals.allowlist,
+    evaluationPolicySnapshot.autoAllowSkills,
+  );
   const allowlistMatches = allowlistEval.allowlistMatches;
   const analysisOk = allowlistEval.analysisOk;
+  const { resolveSkillBinAuthorityDrift, revalidateSkillBinAuthority } =
+    createGatewaySkillBinAuthorityRecheck({
+      allowlistParams: params,
+      analysisOk,
+      segments: allowlistEval.segments,
+      segmentSatisfiedBy: allowlistEval.segmentSatisfiedBy,
+      autoAllowSkills: evaluationPolicySnapshot.autoAllowSkills,
+    });
   const allowlistSatisfied =
     hostSecurity === "allowlist" && analysisOk ? allowlistEval.allowlistSatisfied : false;
   const obsoleteGeneratedApprovalCount = countObsoleteGeneratedExecApprovals(approvals.file);
@@ -798,6 +740,12 @@ export async function processGatewayAllowlist(
         initiateSpawn: consumeGrant.initiateSpawn,
         releaseSpawn: consumeGrant.releaseSpawn,
         revalidateBeforeExecution: async () => {
+          // Recheck skill authority before consuming the grant, so a withdrawn skill bin denies
+          // the launch without spending the standing grant.
+          const skillAuthorityDenied = await revalidateSkillBinAuthority?.();
+          if (skillAuthorityDenied) {
+            return skillAuthorityDenied;
+          }
           let grantUse: Awaited<ReturnType<typeof consume>> | undefined;
           try {
             grantUse = await consume(params.signal);
@@ -884,7 +832,7 @@ export async function processGatewayAllowlist(
       };
     }
     const approvalMutableFileBinding = mutableFileBinding;
-    const revalidateBeforeExecution =
+    const revalidateBeforeExecution = chainRevalidations([
       approvedCwdSnapshot || approvalMutableFileBinding.operands.length > 0
         ? () =>
             revalidateGatewayExecApprovalBinding({
@@ -893,7 +841,9 @@ export async function processGatewayAllowlist(
               command: params.command,
               cwd: params.workdir,
             })
-        : undefined;
+        : undefined,
+      revalidateSkillBinAuthority,
+    ]);
     const authorizationCandidates = allowlistEval.authorizationPlan?.ok
       ? allowlistEval.authorizationPlan.groups.flatMap((group) => group.candidates)
       : [];
@@ -1447,11 +1397,15 @@ export async function processGatewayAllowlist(
               startupSignal: params.signal,
               assertCurrent,
               beforeSpawn: async () => {
-                finalBindingDenied = await resolveGatewayExecApprovalDrift({
-                  binding: approvalMutableFileBinding,
-                  cwdSnapshot: approvedCwdSnapshot,
-                  cwd: params.workdir,
-                });
+                // Detached approval can settle long after evaluation, so this launch needs the
+                // same skill-authority recheck as the inline paths: assertCurrent only revisits
+                // the policy flag, never which executable a skill currently authorizes.
+                finalBindingDenied =
+                  (await resolveGatewayExecApprovalDrift({
+                    binding: approvalMutableFileBinding,
+                    cwdSnapshot: approvedCwdSnapshot,
+                    cwd: params.workdir,
+                  })) ?? (await resolveSkillBinAuthorityDrift?.());
                 if (finalBindingDenied) {
                   throw finalBindingDeniedError;
                 }
@@ -1568,19 +1522,21 @@ export async function processGatewayAllowlist(
     ),
   });
 
+  const revalidateBeforeExecution = chainRevalidations([
+    approvedCwdSnapshot
+      ? () =>
+          revalidateGatewayExecApprovalBinding({
+            cwdSnapshot: approvedCwdSnapshot,
+            command: params.command,
+            cwd: params.workdir,
+          })
+      : undefined,
+    revalidateSkillBinAuthority,
+  ]);
   return {
     execCommandOverride: enforcedCommand,
     assertCurrent,
-    ...(approvedCwdSnapshot
-      ? {
-          revalidateBeforeExecution: () =>
-            revalidateGatewayExecApprovalBinding({
-              cwdSnapshot: approvedCwdSnapshot,
-              command: params.command,
-              cwd: params.workdir,
-            }),
-        }
-      : {}),
+    ...(revalidateBeforeExecution ? { revalidateBeforeExecution } : {}),
   };
 }
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
