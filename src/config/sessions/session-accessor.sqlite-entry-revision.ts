@@ -108,6 +108,9 @@ export function cacheValidityTokensEqual(
   );
 }
 
+/** Bounded re-evaluations when foreign commits keep moving the revision during the predicate. */
+const MAX_PREDICATE_EVALUATIONS = 8;
+
 class SessionEntryRevisionConflictError extends Error {
   readonly code = "invalid_state";
 }
@@ -121,24 +124,33 @@ export function createSessionEntryRevisionGuard(
   let verified: SqliteSessionEntryRevision | undefined;
   return () => {
     assertSourceCurrent();
-    const before = readSessionEntryCacheValidityToken(database);
+    let before = readSessionEntryCacheValidityToken(database);
     if (verified && cacheValidityTokensEqual(verified, before)) {
       assertSourceCurrent();
       return;
     }
     verified = undefined;
-    if (!matches()) {
-      throw new SessionEntryRevisionConflictError(
-        "Prepared session entry facts are no longer current",
-      );
-    }
-    const after = readSessionEntryCacheValidityToken(database);
-    assertSourceCurrent();
-    // A foreign commit during the predicate must not be hidden by its later revision.
-    if (!cacheValidityTokensEqual(before, after)) {
-      throw new SessionEntryRevisionConflictError(
-        "Session entry facts changed during their mutation check",
-      );
+    let after: SqliteSessionEntryRevision;
+    for (let evaluation = 1; ; evaluation += 1) {
+      if (!matches()) {
+        throw new SessionEntryRevisionConflictError(
+          "Prepared session entry facts are no longer current",
+        );
+      }
+      after = readSessionEntryCacheValidityToken(database);
+      assertSourceCurrent();
+      if (cacheValidityTokensEqual(before, after)) {
+        break;
+      }
+      // A foreign commit during the predicate must not be hidden by its later revision: data_version
+      // moves on any commit to the database, so re-evaluate under the newer revision instead of
+      // refusing facts an unrelated writer never touched. Inside a transaction a change is our own.
+      if (evaluation >= MAX_PREDICATE_EVALUATIONS || database.isTransaction) {
+        throw new SessionEntryRevisionConflictError(
+          "Session entry facts changed during their mutation check",
+        );
+      }
+      before = after;
     }
     if (!database.isTransaction) {
       verified = after;

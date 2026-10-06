@@ -284,9 +284,44 @@ describe("SQLite session entry patch commit revalidation", () => {
       guard();
       mutateRowOutOfBand({ label: "harmless metadata" });
       mutateDuringPredicate = true;
-      expect(guard).toThrow("Session entry facts changed during their mutation check");
+      // The re-evaluation under the newer revision sees the replaced writer.
+      expect(guard).toThrow("Prepared session entry facts are no longer current");
       mutateDuringPredicate = false;
       expect(guard).toThrow("Prepared session entry facts are no longer current");
+    });
+
+    it("re-checks instead of refusing when an unrelated commit lands during the predicate", () => {
+      const matches = ownerPredicate();
+      let evaluations = 0;
+      let commitsDuringPredicate = 1;
+      const guard = createSessionEntryRevisionGuard(
+        database.db,
+        () => {},
+        () => {
+          evaluations += 1;
+          const matched = matches();
+          if (commitsDuringPredicate > 0) {
+            commitsDuringPredicate -= 1;
+            mutateRowOutOfBand({ label: `unrelated ${evaluations}` });
+          }
+          return matched;
+        },
+      );
+      expect(guard).not.toThrow();
+      expect(evaluations).toBe(2);
+      expect(guard).not.toThrow();
+      expect(evaluations).toBe(2);
+
+      commitsDuringPredicate = Number.POSITIVE_INFINITY;
+      mutateRowOutOfBand({ label: "invalidate verified revision" });
+      evaluations = 0;
+      expect(guard).toThrowError(
+        expect.objectContaining({
+          code: "invalid_state",
+          message: "Session entry facts changed during their mutation check",
+        }),
+      );
+      expect(evaluations).toBe(8);
     });
 
     it.each(["sessionId", "lifecycleRevision", "activeWriterRunId"] as const)(
