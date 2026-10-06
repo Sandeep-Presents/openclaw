@@ -764,7 +764,7 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
     },
   );
 
-  it("keeps hook prompt context visible while hiding inter-session provenance", async () => {
+  it("keeps hook context and inter-session provenance in model text", async () => {
     hoisted.sessionManager.getHeader.mockReturnValue({ version: 4 });
     const recalledMemoryContext = [
       "<relevant-memories>",
@@ -799,7 +799,7 @@ describe("runEmbeddedAttempt context engine sessionKey forwarding", () => {
     );
     expect(JSON.stringify(seen.preprocessedModelMessages)).toContain("session preprocessed");
     expect(JSON.stringify(seen.preprocessedModelMessages)).toContain("dynamic hook tail");
-    expect(JSON.stringify(seen.modelMessages)).not.toContain("[Inter-session message]");
+    expect(JSON.stringify(seen.modelMessages)).toMatch(/\[Inter-session message\].*isUser=false/);
     expect(JSON.stringify(seen.modelMessages)).not.toContain("secret runtime context");
     const runtimeContext = runtimeContextMessage(seen.messages);
     expect(seen.systemPrompt).not.toContain("[Inter-session message]");
