@@ -112,6 +112,14 @@ function parseSnapshotPayload(data: string): IdbDatabaseSnapshot[] | null {
   return parsed;
 }
 
+export function isValidMatrixIdbSnapshotJson(data: string): boolean {
+  try {
+    return parseSnapshotPayload(data) !== null;
+  } catch {
+    return false;
+  }
+}
+
 function idbReq<T>(req: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
     req.addEventListener("success", () => resolve(req.result), { once: true });
@@ -165,6 +173,18 @@ async function dumpIndexedDatabases(databasePrefix?: string): Promise<IdbDatabas
     db.close();
   }
   return snapshot;
+}
+
+async function clearAccountIndexedDatabases(databasePrefix?: string): Promise<void> {
+  if (!databasePrefix) {
+    return;
+  }
+  const names = await fakeIndexedDB.databases();
+  for (const { name } of names) {
+    if (name?.startsWith(`${databasePrefix}::`)) {
+      await idbReq(fakeIndexedDB.deleteDatabase(name));
+    }
+  }
 }
 
 async function restoreIndexedDatabases(snapshot: IdbDatabaseSnapshot[]): Promise<void> {
@@ -221,24 +241,33 @@ async function restoreIndexedDatabases(snapshot: IdbDatabaseSnapshot[]): Promise
   }
 }
 
-function resolveDefaultIdbSnapshotPath(): string {
+export function resolveDefaultIdbSnapshotPath(): string {
   const stateDir =
     process.env.OPENCLAW_STATE_DIR || path.join(process.env.HOME || "/tmp", ".openclaw");
   return path.join(stateDir, "matrix", "crypto-idb-snapshot.json");
 }
 
-async function readCanonicalSnapshotJson(
+async function readCanonicalSnapshot(
   snapshotPath: string,
   stateRuntime: MatrixSnapshotStateRuntime,
-): Promise<string | null> {
+): Promise<IdbDatabaseSnapshot[] | null> {
   throwIfLegacySnapshotNeedsDoctor(snapshotPath);
-  return await readMatrixIdbSnapshotJson(path.dirname(snapshotPath), stateRuntime);
+  const snapshotJson = await readMatrixIdbSnapshotJson(path.dirname(snapshotPath), stateRuntime);
+  if (snapshotJson === null) {
+    return null;
+  }
+  const snapshot = parseSnapshotPayload(snapshotJson);
+  if (!snapshot) {
+    throw new Error("Malformed IndexedDB snapshot payload");
+  }
+  return snapshot;
 }
 
 // Production callers pass MatrixStoragePaths.idbSnapshotPath; explicit paths only isolate tests.
 export async function restoreIdbFromDisk(
   snapshotPath?: string,
   stateRuntime?: MatrixSnapshotStateRuntime,
+  databasePrefix?: string,
 ): Promise<boolean> {
   const resolvedPath = snapshotPath ?? resolveDefaultIdbSnapshotPath();
   let callbackStarted = false;
@@ -247,17 +276,12 @@ export async function restoreIdbFromDisk(
     // withFileLock is acquire-or-throw; it never skips the callback on contention.
     return await withFileLock(resolvedPath, MATRIX_IDB_SNAPSHOT_LOCK_OPTIONS, async () => {
       callbackStarted = true;
-      const storedSnapshotJson = await readCanonicalSnapshotJson(
-        resolvedPath,
-        snapshotStateRuntime,
-      );
-      if (!storedSnapshotJson) {
+      const snapshot = await readCanonicalSnapshot(resolvedPath, snapshotStateRuntime);
+      if (snapshot === null) {
+        await clearAccountIndexedDatabases(databasePrefix);
         return false;
       }
-      const snapshot = parseSnapshotPayload(storedSnapshotJson);
-      if (!snapshot) {
-        return false;
-      }
+      await clearAccountIndexedDatabases(databasePrefix);
       await restoreIndexedDatabases(snapshot);
       LogService.info(
         "IdbPersistence",
@@ -273,7 +297,7 @@ export async function restoreIdbFromDisk(
       throwLegacySnapshotMigrationRequired();
     }
     LogService.warn("IdbPersistence", "Failed to restore IndexedDB snapshot from SQLite:", err);
-    return false;
+    throw err;
   }
 }
 
@@ -297,7 +321,7 @@ export async function persistIdbToDisk(params?: {
       async () => {
         callbackStarted = true;
         const storageRootDir = path.dirname(snapshotPath);
-        await readCanonicalSnapshotJson(snapshotPath, stateRuntime);
+        await readCanonicalSnapshot(snapshotPath, stateRuntime);
         const snapshot = await dumpIndexedDatabases(params?.databasePrefix);
         if (params?.abortSignal?.aborted || snapshot.length === 0) {
           return 0;

@@ -94,7 +94,11 @@ it("completes absent legacy-state checks without loading client runtimes", async
     oauthDir: path.join(stateDir, "oauth"),
     context: { openPluginStateKeyedStore },
   };
-  for (const id of ["matrix-account-sqlite-schema", "matrix-sync-cache-json-to-plugin-state"]) {
+  for (const id of [
+    "matrix-account-sqlite-schema",
+    "matrix-crypto-unsafe-state",
+    "matrix-sync-cache-json-to-plugin-state",
+  ]) {
     const migration = stateMigrations.find((entry) => entry.id === id);
     if (!migration) {
       throw new Error(`Missing migration: ${id}`);

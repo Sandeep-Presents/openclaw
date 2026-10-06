@@ -42,6 +42,17 @@ type MatrixIdbSnapshotChunk = {
 
 type MatrixIdbSnapshotRecord = MatrixIdbSnapshotMeta | MatrixIdbSnapshotChunk;
 
+class MatrixIdbSnapshotInvalidError extends Error {
+  readonly code = "matrix-idb-snapshot-invalid";
+
+  constructor(reason: string) {
+    super(
+      `Invalid Matrix crypto SQLite snapshot (${reason}); preserve the account state and restore a valid backup before retrying.`,
+    );
+    this.name = "MatrixIdbSnapshotInvalidError";
+  }
+}
+
 export type MatrixSnapshotStateRuntime = Pick<PluginRuntime["state"], "openKeyedStore">;
 
 export function openMatrixRecoveryKeyStoreOptions(storageRootDir: string) {
@@ -149,8 +160,15 @@ export async function readMatrixIdbSnapshotJson(
     openMatrixIdbSnapshotStoreOptions(storageRootDir),
   );
   const meta = await store.lookup(idbMetaKey());
-  if (!isIdbSnapshotMeta(meta)) {
+  if (meta === undefined) {
+    // Chunks without metadata can be an interrupted first publication, not a fresh account.
+    if ((await store.entries()).length !== 0) {
+      throw new MatrixIdbSnapshotInvalidError("metadata is missing");
+    }
     return null;
+  }
+  if (!isIdbSnapshotMeta(meta)) {
+    throw new MatrixIdbSnapshotInvalidError("metadata is malformed");
   }
   const chunks = await readMatrixStateChunks(
     store,
@@ -158,10 +176,13 @@ export async function readMatrixIdbSnapshotJson(
     "snapshot-chunk",
   );
   if (!chunks) {
-    return null;
+    throw new MatrixIdbSnapshotInvalidError("snapshot chunks are missing or malformed");
   }
   const snapshotJson = chunks.join("");
-  return meta.digest === digestText(snapshotJson) ? snapshotJson : null;
+  if (meta.digest !== digestText(snapshotJson)) {
+    throw new MatrixIdbSnapshotInvalidError("checksum mismatch");
+  }
+  return snapshotJson;
 }
 
 async function hasMatrixIdbSnapshotState(storageRootDir: string): Promise<boolean> {
