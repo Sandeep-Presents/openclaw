@@ -180,7 +180,7 @@ describe("createCliJsonlStreamingParser retained budget", () => {
     parser.finish();
 
     expect(parser.getErrorText()).toBe(
-      `CLI JSONL output retained more than ${limit} characters of reply, thinking and tool input in one turn; refusing to parse output.`,
+      `CLI JSONL output retained more than ${limit} characters of reply, thinking and tool state in one turn; refusing to parse output.`,
     );
     expect(parser.getOutput()).toMatchObject({ text: "" });
   });
@@ -196,4 +196,103 @@ describe("createCliJsonlStreamingParser retained budget", () => {
     expect(parser.getErrorText()).toContain("retained more than");
     expect(tools).toHaveLength(0);
   });
+
+  it("charges complete start-block tool inputs while their blocks are open", () => {
+    const input = { content: "d".repeat(5 * 1024 * 1024) };
+    const start = (index: number, n: number) =>
+      frame(
+        {
+          type: "content_block_start",
+          index,
+          content_block: { type: "tool_use", id: `toolu_block_${index}`, name: "Write", input },
+        },
+        n,
+      );
+    const stop = (index: number, n: number) => frame({ type: "content_block_stop", index }, n);
+
+    const sequential = createClaudeParser();
+    sequential.parser.push(`${[start(0, 1), stop(0, 2), start(1, 3), stop(1, 4)].join("\n")}\n`);
+    sequential.parser.push(`${result("done")}\n`);
+    sequential.parser.finish();
+    expect(sequential.parser.getErrorText()).toBeNull();
+    expect(sequential.parser.getOutput()?.text).toBe("done");
+
+    const concurrent = createClaudeParser();
+    concurrent.parser.push(`${[start(0, 1), start(1, 2)].join("\n")}\n`);
+    expect(concurrent.parser.getErrorText()).toContain("retained more than");
+  });
+
+  it("refuses a flood of unique tool calls instead of growing their IDs without bound", () => {
+    const tools: CliToolUseStartDelta[] = [];
+    const { parser } = createClaudeParser(tools);
+    const pushTool = (n: number) => {
+      const id = `toolu_${String(n).padStart(4096, "0")}`;
+      parser.push(
+        `${JSON.stringify({
+          type: "assistant",
+          message: {
+            id: `msg_${n}`,
+            role: "assistant",
+            content: [{ type: "tool_use", id, name: "Bash", input: {} }],
+          },
+          session_id: SESSION_ID,
+        })}\n${JSON.stringify({
+          type: "user",
+          message: {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: id, content: "" }],
+          },
+          session_id: SESSION_ID,
+        })}\n`,
+      );
+    };
+    for (let n = 0; n < 100; n += 1) {
+      pushTool(n);
+    }
+    expect(parser.getErrorText()).toBeNull();
+    for (let n = 100; n < 1_000 && !parser.getErrorText(); n += 1) {
+      pushTool(n);
+    }
+
+    expect(parser.getErrorText()).toContain("retained more than");
+    expect(tools.length).toBeLessThan(1_000);
+  });
+
+  it.each([
+    { name: "a snapshot and its result", withPartials: false },
+    { name: "partial frames, a snapshot and its result", withPartials: true },
+  ])(
+    "still accepts the largest reply the old wire budget allowed via $name",
+    ({ withPartials }) => {
+      const oldWireBudget = 8 * 1024 * 1024;
+      const chunk = "e".repeat(64 * 1024);
+      // Without partial frames the reply crosses the wire twice; with them, three times.
+      const copies = withPartials ? 3 : 2;
+      const frames = Math.floor((oldWireBudget - 64 * 1024) / copies / chunk.length);
+      const reply = chunk.repeat(frames);
+      const lines = withPartials ? replyMessage(frames, chunk).slice(0, -1) : [];
+      lines.push(
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            id: "msg_reply",
+            role: "assistant",
+            content: [{ type: "text", text: reply }],
+            stop_reason: null,
+          },
+          session_id: SESSION_ID,
+        }),
+        result(reply),
+      );
+      const wire = `${lines.join("\n")}\n`;
+      expect(wire.length).toBeLessThan(oldWireBudget);
+
+      const { parser } = createClaudeParser();
+      parser.push(wire);
+      parser.finish();
+
+      expect(parser.getErrorText()).toBeNull();
+      expect(parser.getOutput()?.text).toBe(reply);
+    },
+  );
 });

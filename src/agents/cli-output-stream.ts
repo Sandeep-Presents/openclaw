@@ -21,9 +21,9 @@ import {
   dispatchClaudeCliThinking,
   dispatchGeminiCliStreamingToolEvent,
   partitionLeadingTaggedReasoning,
-  pendingToolInputChars,
   projectCliBackendEvent,
   projectCliTaggedReasoning,
+  retainedToolChars,
 } from "./cli-output-events.js";
 import * as cliOutputLifecycle from "./cli-output-lifecycle.js";
 import {
@@ -210,17 +210,21 @@ export function createCliJsonlStreamingParser(params: CliJsonlStreamingParserOpt
       textsChars += texts[countedTexts]!.length;
       countedTexts += 1;
     }
+    // The reply is held in a fixed set of views (streamed text, the current
+    // message, the result); each character counts once, so any reply the old
+    // wire budget accepted still fits. Per-block thinking likewise mirrors
+    // emittedText.
+    const replyChars = Math.max(
+      assistantText.length + pendingClaudeText.length + currentTaggedReasoningText.length,
+      currentClaudeMessageText.length,
+      output?.text.length ?? 0,
+      textsChars,
+    );
     return (
-      assistantText.length +
-      currentClaudeMessageText.length +
-      pendingClaudeText.length +
+      replyChars +
+      thinkingTracker.emittedText.length +
       customThinkingText.length +
-      currentTaggedReasoningText.length +
-      // emittedText joins the per-block thinking the tracker also keeps.
-      thinkingTracker.emittedText.length * 2 +
-      pendingToolInputChars(toolTracker) +
-      textsChars +
-      (output?.text.length ?? 0)
+      retainedToolChars(toolTracker)
     );
   };
 
