@@ -474,6 +474,11 @@ describe("talk.catalog handler", () => {
           isConfigured: vi.fn(() => true),
         } as never,
       ]);
+      mocks.getSpeechProvider.mockReturnValue({
+        id: "elevenlabs",
+        label: "ElevenLabs",
+        isConfigured: vi.fn(() => true),
+      } as never);
       mocks.getResolvedSpeechProviderConfig.mockReturnValue({ apiKey: "speech-key" });
       mocks.listRealtimeTranscriptionProviders.mockReturnValue([
         {
@@ -570,6 +575,7 @@ describe("talk.catalog handler", () => {
           transports: ["webrtc", "provider-websocket", "gateway-relay", "managed-room"],
           brains: ["agent-consult", "direct-tools", "none"],
           speech: {
+            ready: true,
             activeProvider: "elevenlabs",
             providers: [
               {
@@ -578,6 +584,7 @@ describe("talk.catalog handler", () => {
                 aliases: ["11labs"],
                 configured: true,
                 modes: ["stt-tts"],
+                transports: ["managed-room"],
                 brains: ["agent-consult"],
                 models: ["eleven_flash_v2_5"],
                 voices: ["voice-1"],
