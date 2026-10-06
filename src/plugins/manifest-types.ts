@@ -395,6 +395,8 @@ export type PluginManifestBackupResource = {
 /** Provider-authored limits and result semantics available before runtime activation. */
 export type DecisionProviderCapabilities = {
   questionTypes: ("boolean" | "choice" | "score")[];
+  /** Omitted means text-only. The host checks this before image dispatch. */
+  inputModalities?: ("text" | "image")[];
   maxQuestions?: number;
   maxChoiceAlternatives?: number;
   maxScoreLevels?: number;

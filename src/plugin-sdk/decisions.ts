@@ -3,6 +3,7 @@ export type {
   DecisionEntry,
   DecisionQuestion,
   DecisionBatch,
+  DecisionImage,
   DecisionAnswer,
   DecisionBatchResult,
   ProviderFailureReason,

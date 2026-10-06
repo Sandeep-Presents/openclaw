@@ -461,10 +461,10 @@ export function resolveMediaToolSandboxConfig(
   return root ? { ...sandbox, root, workspaceOnly: workspaceOnly === true } : null;
 }
 
-/** Loads generation references while retaining each tool's distinct transport and sandbox policy. */
+/** Loads tool media references while retaining each tool's distinct transport and sandbox policy. */
 export async function loadMediaToolReferences<T>(params: {
   inputs: string[];
-  toolName: "image_generate" | "video_generate" | "music_generate";
+  toolName: "image_generate" | "video_generate" | "music_generate" | "decision_evaluate";
   expectedKind: "image" | "video" | "audio";
   sandbox: SandboxedBridgeMediaPathConfig | null;
   workspaceDir?: string;
