@@ -32,6 +32,7 @@ import {
   recoverInstalledLaunchAgentAfterUpdate,
   type PostUpdateLaunchAgentRecoveryResult,
 } from "./update-command-launch-agent-recovery.js";
+import { updateRunLedgerOptions } from "./update-command-ledger.js";
 import { restoreOriginalManagedServiceDefinition } from "./update-command-original-service-restore.js";
 import {
   originalServiceAuthority,
@@ -333,7 +334,7 @@ export async function admitMigratedGatewayRecovery(
       params.opts.run.runId,
       { recovery: result.recovery },
       (message) => defaultRuntime.error(message),
-      { env: params.opts.run.env },
+      updateRunLedgerOptions(params.opts.run),
     );
   }
   return true;
