@@ -24,7 +24,7 @@ describe("heartbeat broadcast outcomes", () => {
     vi.restoreAllMocks();
   });
 
-  function startRunner() {
+  function startRunner(agents: string[] = ["main", "ops"]) {
     const register = vi.spyOn(heartbeatWake, "setHeartbeatWakeHandler");
     const runOnce = vi
       .fn<NonNullable<Parameters<typeof startHeartbeatRunner>[0]["runOnce"]>>()
@@ -32,9 +32,9 @@ describe("heartbeat broadcast outcomes", () => {
     const cfg = {
       agents: {
         defaults: { heartbeat: { every: "30m" } },
-        entries: { main: {}, ops: {} },
+        entries: Object.fromEntries(agents.map((agentId) => [agentId, {}])),
       },
-    } as OpenClawConfig;
+    } satisfies OpenClawConfig;
     const runner = startHeartbeatRunner({ cfg, runOnce });
     onTestFinished(() => runner.stop());
     const run = register.mock.calls[0]?.[0];
@@ -164,4 +164,27 @@ describe("heartbeat broadcast outcomes", () => {
     expect(runOnce).toHaveBeenCalledTimes(2);
     expect(await run(wake)).toMatchObject({ status: "skipped", reason: "not-due" });
   });
+  it.each([{ agents: ["main"] }, { agents: ["main", "ops"] }])(
+    "keeps a broadcast transcript identity only for one executed agent: $agents",
+    async ({ agents }) => {
+      const { run, runOnce } = startRunner(agents);
+      runOnce.mockImplementation(async ({ agentId }) => ({
+        status: "ran",
+        durationMs: 1,
+        sessionKey: `agent:${agentId}:main`,
+        sessionId: `executed-${agentId}`,
+      }));
+      const result = await run({ source: "manual", intent: "manual" });
+      expect(result.status).toBe("ran");
+      if (result.status !== "ran") {
+        throw new Error("broadcast did not execute");
+      }
+      if (agents.length === 1) {
+        expect(result).toMatchObject({ sessionKey: "agent:main:main", sessionId: "executed-main" });
+      } else {
+        expect(result).not.toHaveProperty("sessionKey");
+        expect(result).not.toHaveProperty("sessionId");
+      }
+    },
+  );
 });

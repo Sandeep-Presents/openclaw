@@ -350,9 +350,7 @@ export function startHeartbeatRunner(opts: {
         state.agents.set(targetAgentId, targetAgent);
       }
       const { result } = await runOneAgent(targetAgent, true);
-      return result.status === "ran"
-        ? { status: "ran", durationMs: Date.now() - startedAt }
-        : result;
+      return result.status === "ran" ? { ...result, durationMs: Date.now() - startedAt } : result;
     }
 
     const enrolledAgents = Array.from(state.agents.values()).filter(
@@ -395,7 +393,15 @@ export function startHeartbeatRunner(opts: {
       }
     }
     if (ran) {
-      return firstFailure ?? { status: "ran", durationMs: Date.now() - startedAt };
+      return (
+        firstFailure ?? {
+          ...(agentOutcomes.length === 1 && firstResult?.status === "ran"
+            ? firstResult
+            : undefined),
+          status: "ran",
+          durationMs: Date.now() - startedAt,
+        }
+      );
     }
     return (
       firstGuardSkip ??
