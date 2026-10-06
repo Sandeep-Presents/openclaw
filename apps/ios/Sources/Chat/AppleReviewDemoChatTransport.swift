@@ -745,6 +745,36 @@ private actor LocalFixtureChatStore {
 
     private static func seedMessages(fixture: LocalChatFixture) -> [OpenClawChatMessage] {
         let now = Date().timeIntervalSince1970 * 1000
+        if ProcessInfo.processInfo.arguments.contains("--openclaw-voice-consult-rows-fixture") {
+            // Persisted realtime-voice renditions beside consult answers, in both arrival orders.
+            let voice = OpenClawChatInputProvenance(kind: "realtime_voice", sourceChannel: "talk")
+            func row(_ text: String, at offset: Double, spoken: Bool) -> OpenClawChatMessage {
+                OpenClawChatMessage(
+                    role: "assistant",
+                    content: [OpenClawChatMessageContent(type: "text", text: text)],
+                    timestamp: now + offset,
+                    model: spoken ? "realtime-voice" : "consult-model",
+                    stopReason: "stop",
+                    provenance: spoken ? voice : nil,
+                    phase: spoken ? nil : "final_answer")
+            }
+            return [
+                self.message(
+                    role: "user",
+                    text: "Which build is on my phone?",
+                    timestamp: now,
+                    transcriptMessageID: "fixture-voice-prompt-1"),
+                row("VOICE_SPOKEN_FIRST: The latest build is on your phone.", at: 1, spoken: true),
+                row("CONSULT_AFTER: The build went on at about 14:15.", at: 2, spoken: false),
+                self.message(
+                    role: "user",
+                    text: "And the one before?",
+                    timestamp: now + 3,
+                    transcriptMessageID: "fixture-voice-prompt-2"),
+                row("CONSULT_FIRST: The previous build went on yesterday.", at: 4, spoken: false),
+                row("VOICE_SPOKEN_AFTER: The one before went on yesterday.", at: 5, spoken: true),
+            ]
+        }
         if ProcessInfo.processInfo.arguments.contains("--openclaw-long-chat-fixture") {
             return [
                 self.message(
