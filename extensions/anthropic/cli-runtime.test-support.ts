@@ -128,13 +128,19 @@ for await (const line of createInterface({ input: process.stdin })) {
       process.stderr.write("PermissionError: fixture cannot read its input\n", () => process.exit(1));
       continue;
     }
-    if (scenario === "background-success") {
+    if (scenario === "background-success" || scenario === "background-agent-subagent-bash") {
+      const subagentBash = scenario === "background-agent-subagent-bash";
       send({ type: "system", subtype: "background_tasks_changed",
         tasks: [{ task_id: "background-agent", task_type: "local_agent" }] });
       writeFileSync("background.ready", "ready");
       sendReceipt(path.join(process.cwd(), "background.ready"), "ready");
       send({ type: "result", subtype: "success", is_error: false, result: "", session_id: "fixture-session" });
+      // Claude Code 2.1.289: the agent's own Bash reports on the main stream, owner field only on its start.
+      if (subagentBash) send({ type: "system", subtype: "task_started", task_id: "subagent-bash",
+        task_type: "local_bash", is_backgrounded: false, owned_by_subagent: true, tool_use_id: "tool-subagent-bash" });
       while (!existsSync("background.release")) await delay(5);
+      if (subagentBash) send({ type: "system", subtype: "task_notification", task_id: "subagent-bash",
+        tool_use_id: "tool-subagent-bash", status: "completed", output_file: "", summary: "sleep" });
       send({ type: "system", subtype: "background_tasks_changed", tasks: [] });
       send({ type: "system", subtype: "task_notification", task_id: "background-agent",
         status: "completed", output_file: "", summary: "agent finished" });

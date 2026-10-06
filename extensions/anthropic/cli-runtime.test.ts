@@ -286,36 +286,41 @@ describe("Claude native stdio boundary", () => {
     await expect(access(path.join(context.cwd, "fixture.pid"))).rejects.toThrow();
   });
 
-  it("keeps an interim result open until native background agents report their final answer", async () => {
-    const liveSession = createLiveSession();
-    const context = await createContext("background-success", { liveSession });
-    const interim = createDeferred<Record<string, unknown>>();
-    let settled = false;
-    const running = (async () => {
-      const records: Record<string, unknown>[] = [];
-      for await (const record of executeClaudeCli(context)) {
-        records.push(record);
-        if (record.type === "result") {
-          interim.resolve(record);
+  // The second scenario's agent runs its own Bash, whose notification reaches the main stream first.
+  it.each(["background-success", "background-agent-subagent-bash"])(
+    "keeps an interim result open until native background agents report their final answer (%s)",
+    async (scenario) => {
+      const liveSession = createLiveSession();
+      const context = await createContext(scenario, { liveSession });
+      const interim = createDeferred<Record<string, unknown>>();
+      let settled = false;
+      const running = (async () => {
+        const records: Record<string, unknown>[] = [];
+        for await (const record of executeClaudeCli(context)) {
+          records.push(record);
+          if (record.type === "result") {
+            interim.resolve(record);
+          }
         }
+        settled = true;
+        return records;
+      })();
+      try {
+        expect(await interim.promise).toMatchObject({
+          type: "result",
+          openclaw_interim_result: true,
+        });
+        expect(settled).toBe(false);
+        expect(liveSession.current()?.isIdle()).toBe(false);
+      } finally {
+        await writeFile(path.join(context.cwd, "background.release"), "release");
       }
-      settled = true;
-      return records;
-    })();
-    try {
-      expect(await interim.promise).toMatchObject({
-        type: "result",
-        openclaw_interim_result: true,
-      });
-      expect(settled).toBe(false);
-      expect(liveSession.current()?.isIdle()).toBe(false);
-    } finally {
-      await writeFile(path.join(context.cwd, "background.release"), "release");
-    }
-    const records = await running;
-    expect(resultDetail(records).finalBackgroundAnswer).toBe(true);
-    expect(records.at(-1)).not.toHaveProperty("openclaw_interim_result");
-  });
+      const records = await running;
+      expect(resultDetail(records).finalBackgroundAnswer).toBe(true);
+      expect(records.at(-1)).not.toHaveProperty("openclaw_interim_result");
+      expect(liveSession.current()?.isIdle()).toBe(true);
+    },
+  );
 
   const allowRead = { behavior: "allow" as const, updatedInput: { file_path: "approved.txt" } };
   it.for([

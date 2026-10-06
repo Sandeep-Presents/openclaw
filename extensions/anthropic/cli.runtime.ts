@@ -68,6 +68,11 @@ type ClaudeCliTurn = {
   foregroundTaskIds: Set<string>;
   foregroundBashToolUseIds: Set<string>;
   pendingBackgroundTaskIds: Set<string>;
+  /**
+   * Tasks a subagent started for itself. Native reports their completion on the main
+   * stream with no owner field, but answers it inside that subagent, never with a result.
+   */
+  subagentTaskIds: Set<string>;
   taskNotifications: Map<string, "queued" | "replayed">;
   error?: Error;
 };
@@ -266,7 +271,12 @@ async function acceptMessage(session: ClaudeCliSession, message: Record<string, 
     return;
   }
   if (message.type === "system" && message.subtype === "task_started") {
-    if (typeof message.task_id === "string" && message.task_id) {
+    if (message.owned_by_subagent === true) {
+      // A subagent's own work, foreground or background, notifies that subagent, never this turn.
+      if (typeof message.task_id === "string" && message.task_id) {
+        turn.subagentTaskIds.add(message.task_id);
+      }
+    } else if (typeof message.task_id === "string" && message.task_id) {
       // task_type is optional here; the background task list names it later.
       if (message.is_backgrounded === false) {
         turn.foregroundTaskIds.add(message.task_id);
@@ -306,7 +316,10 @@ async function acceptMessage(session: ClaudeCliSession, message: Record<string, 
     message.type === "system" &&
     message.subtype === "task_notification" &&
     typeof message.task_id === "string" &&
-    message.task_id
+    message.task_id &&
+    // Queuing a subagent's own task would let the next task-notification result consume
+    // its slot instead of the agent's, leaving the agent pending and the turn open.
+    !turn.subagentTaskIds.delete(message.task_id)
   ) {
     // Include non-held tasks: each queued notification has its own ordered result.
     turn.taskNotifications.set(message.task_id, "queued");
@@ -414,6 +427,7 @@ export async function* executeClaudeCli(
     foregroundTaskIds: new Set(),
     foregroundBashToolUseIds: new Set(),
     pendingBackgroundTaskIds: new Set(),
+    subagentTaskIds: new Set(),
     taskNotifications: new Map(),
   };
   session.currentTurn = turn;
