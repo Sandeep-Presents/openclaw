@@ -92,7 +92,7 @@ export const DecisionEvaluateOutput = Type.Unsafe({
 });
 
 /** Validate before traversing the rubric; null means the shared resource guard rejected it. */
-export function parseDecisionEvaluateInput(value: unknown): DecisionBatch | null {
+function parseDecisionEvaluateInput(value: unknown): DecisionBatch | null {
   try {
     if (!validateDecisionBatch(value)) {
       return null;
@@ -109,7 +109,7 @@ export function parseDecisionEvaluateInput(value: unknown): DecisionBatch | null
 }
 
 /** Tool references are resolved by the host before constructing a provider batch. */
-export function parseDecisionImageReferences(value: unknown): string[] {
+function parseDecisionImageReferences(value: unknown): string[] {
   if (value === undefined) {
     return [];
   }

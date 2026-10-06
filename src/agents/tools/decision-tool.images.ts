@@ -38,6 +38,7 @@ export async function loadDecisionImages(params: {
     cwd: params.cwd,
     fsPolicy: params.fsPolicy,
     maxBytes: MAX_IMAGE_BYTES,
+    optimizeImages: false,
     signal: params.signal,
     mapMedia: (media): DecisionImage => {
       const contentType = "mimeType" in media ? media.mimeType : media.contentType;

@@ -1,4 +1,4 @@
-import type { DecisionImage } from "openclaw/plugin-sdk/decisions";
+import type { DecisionBatch } from "openclaw/plugin-sdk/decisions";
 import type { RuntimeConfig } from "./config.js";
 import { EvaluationError, evaluationError } from "./errors.js";
 import { localInput, parseLocalResult } from "./local.js";
@@ -12,7 +12,7 @@ export async function evaluate(
   signal?: AbortSignal,
   deadlineMonotonicMs?: number,
   isAdmissible?: () => boolean,
-  images?: readonly DecisionImage[],
+  images?: DecisionBatch["images"],
 ) {
   if (signal?.aborted) {
     throw evaluationError(undefined, true);
