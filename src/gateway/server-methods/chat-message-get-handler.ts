@@ -15,6 +15,7 @@ import { MAX_PAYLOAD_BYTES } from "../server-constants.js";
 import { withReadySessionRows } from "../session-row-prepared-read.js";
 import { resolveSessionModelRef } from "../session-utils.js";
 import { readChatHistoryMessageById } from "./chat-history-pages.js";
+import { respondChatHistoryUnavailable } from "./chat-history-recovery.js";
 import { prepareChatHistorySessionRead } from "./chat-history-session-read.js";
 import { projectPendingInputMessage } from "./chat-pending-inputs.js";
 import type { GatewayRequestHandlers } from "./types.js";
@@ -51,9 +52,19 @@ export const chatMessageGetHandlers: GatewayRequestHandlers = {
       const { selectedSession, entry, queries, readCurrentSharing, rowProjection } = selection;
       const { cfg, agentId: sessionAgentId, storePath, canonicalKey } = selectedSession;
       const sessionId = entry?.sessionId;
+      let isNativeHistoryCurrent: (() => boolean) | undefined;
       const withCurrentSession = <T>(consume: () => T) =>
         withReadySessionRows(rowProjection, queries, (read) => {
           signal?.throwIfAborted();
+          // Native transcript access authorized for the read must still hold at publication.
+          if (isNativeHistoryCurrent && !isNativeHistoryCurrent()) {
+            respondChatHistoryUnavailable(
+              "chat.message.get",
+              respond,
+              "session changed while reading history; reload the conversation",
+            );
+            return undefined;
+          }
           return readCurrentSharing(read) ? consume() : undefined;
         });
       if (!sessionId) {
@@ -108,23 +119,29 @@ export const chatMessageGetHandlers: GatewayRequestHandlers = {
         });
         return;
       }
-      const resolved = await readChatHistoryMessageById({
-        entry,
-        provider: getCliSessionBinding(entry, "claude-cli")?.sessionId
-          ? resolveSessionModelRef(cfg, entry, sessionAgentId, {
-              allowPluginNormalization: false,
-            }).provider
-          : undefined,
-        sessionAgentId,
-        sessionId,
-        canonicalKey,
-        storePath,
-        messageId,
-        max: 1,
-        maxHistoryBytes: MAX_PAYLOAD_BYTES,
-        effectiveMaxChars,
-        offset: undefined,
-      });
+      const resolved = await readChatHistoryMessageById(
+        {
+          entry,
+          provider: getCliSessionBinding(entry, "claude-cli")?.sessionId
+            ? resolveSessionModelRef(cfg, entry, sessionAgentId, {
+                allowPluginNormalization: false,
+              }).provider
+            : undefined,
+          sessionAgentId,
+          sessionId,
+          canonicalKey,
+          storePath,
+          messageId,
+          max: 1,
+          maxHistoryBytes: MAX_PAYLOAD_BYTES,
+          effectiveMaxChars,
+          offset: undefined,
+        },
+        undefined,
+        (isCurrent) => {
+          isNativeHistoryCurrent = isCurrent;
+        },
+      );
       // Async transcript/archive reads cannot publish under a stale sharing or
       // physical-session snapshot.
       if (!(await withCurrentSession(() => true))) {

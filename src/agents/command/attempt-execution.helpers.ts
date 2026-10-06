@@ -163,6 +163,7 @@ function claudeCliSessionTranscriptPath(params: {
   sessionId: string | undefined;
   workspaceDir: string | undefined;
   homeDir?: string;
+  projectsRoot?: string;
 }): string | null {
   const sessionId = normalizeClaudeCliSessionId(params.sessionId);
   if (!sessionId) {
@@ -176,6 +177,7 @@ function claudeCliSessionTranscriptPath(params: {
     resolveClaudeCliProjectDirForWorkspace({
       workspaceDir,
       homeDir: params.homeDir,
+      projectsRoot: params.projectsRoot,
     }),
     `${sessionId}.jsonl`,
   );
@@ -380,13 +382,20 @@ function formatFallbackTurns(
 export function buildClaudeCliFallbackContextPrelude(params: {
   cliSessionId: string | undefined;
   homeDir?: string;
+  cwd?: string;
+  projectsRoot?: string;
   charBudget?: number;
 }): string {
   const sessionId = params.cliSessionId?.trim();
   if (!sessionId) {
     return "";
   }
-  const seed = readClaudeCliFallbackSeed({ cliSessionId: sessionId, homeDir: params.homeDir });
+  const seed = readClaudeCliFallbackSeed({
+    cliSessionId: sessionId,
+    homeDir: params.homeDir,
+    cwd: params.cwd,
+    projectsRoot: params.projectsRoot,
+  });
   if (!seed) {
     return "";
   }
