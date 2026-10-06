@@ -172,6 +172,113 @@ function subscribe(options: Omit<Parameters<typeof createSubscribedSessionHarnes
 }
 
 describe("streamed final tags", () => {
+  it("defers an incomplete backtick opener until a later final tag can be recognized", () => {
+    const onPartialReply = vi.fn();
+    const emit = subscribe({ enforceFinalTag: true, onPartialReply });
+    emit({ type: "message_start", message: { role: "assistant" } });
+    emitAssistantTextDelta({ emit, delta: "```js" });
+    expect(onPartialReply).not.toHaveBeenCalled();
+
+    emitAssistantTextDelta({ emit, delta: "``` is inline.\n<final>Answer</final>" });
+    expect(extractTextPayloads(onPartialReply.mock.calls)).toEqual(["Answer"]);
+  });
+
+  it("keeps reasoning hidden when an invalid split opener is scanned incrementally", () => {
+    const onAgentEvent = vi.fn();
+    const emit = subscribe({ onAgentEvent });
+    emit({ type: "message_start", message: { role: "assistant" } });
+    emitAssistantTextDelta({ emit, delta: "```js" });
+    emitAssistantTextDelta({ emit, delta: "``` is inline.\n<think>secret</think>\nVisible" });
+    const rendered = extractAgentEventPayloads(onAgentEvent.mock.calls)
+      .map((payload) => payload.delta)
+      .join("");
+    expect(rendered).toContain("Visible");
+    expect(rendered).not.toContain("secret");
+  });
+
+  it.each([
+    {
+      name: "backtick fence",
+      first: "```xm",
+      second: "l\n<final>literal</final>\n```\n<final>Answer</final>",
+    },
+    {
+      name: "tilde fence metadata",
+      first: "~~~ts `meta",
+      second: "data`\n<final>literal</final>\n~~~\n<final>Answer</final>",
+    },
+  ])("preserves a valid split $name", ({ first, second }) => {
+    const onPartialReply = vi.fn();
+    const emit = subscribe({ enforceFinalTag: true, onPartialReply });
+    emit({ type: "message_start", message: { role: "assistant" } });
+    emitAssistantTextDelta({ emit, delta: first });
+    expect(onPartialReply).not.toHaveBeenCalled();
+    emitAssistantTextDelta({ emit, delta: second });
+    expect(extractTextPayloads(onPartialReply.mock.calls)).toEqual(["Answer"]);
+  });
+
+  it.each([
+    {
+      name: "complete header",
+      deltas: ["<think>\n```xml </think>\nHIDDEN_MARKER\n"],
+      tail: "```\n</think><final>Answer</final>",
+    },
+    {
+      name: "split header and tag",
+      deltas: ["<think>\n```xm", "l </thi", "nk>\nHIDDEN_MARKER\n"],
+      tail: "```\n</think><final>Answer</final>",
+    },
+    {
+      name: "indented CRLF header",
+      deltas: ["<think>\r\n   ````xml </think>\r\nHIDDEN_MARKER\r\n"],
+      tail: "   ````\r\n</think><final>Answer</final>",
+    },
+    {
+      name: "invalid fence containing inline code",
+      deltas: ["<think>\n```xml </think>```\nHIDDEN_MARKER\n"],
+      tail: "</think><final>Answer</final>",
+    },
+  ])("keeps close-tag literals private with $name", ({ deltas, tail }) => {
+    for (const enforceFinalTag of [false, true]) {
+      const onPartialReply = vi.fn();
+      const onAgentEvent = vi.fn();
+      const onBlockReply = vi.fn();
+      const emit = subscribe({
+        enforceFinalTag,
+        onPartialReply,
+        onAgentEvent,
+        onBlockReply,
+        blockReplyBreak: "text_end",
+      });
+      emit({ type: "message_start", message: { role: "assistant" } });
+      for (const delta of deltas) {
+        emitAssistantTextDelta({ emit, delta });
+        expect(onPartialReply).not.toHaveBeenCalled();
+        expect(extractAgentEventPayloads(onAgentEvent.mock.calls)).toEqual([]);
+        expect(onBlockReply).not.toHaveBeenCalled();
+      }
+      emitAssistantTextDelta({ emit, delta: tail });
+      emitAssistantTextEnd({ emit, content: deltas.join("") + tail });
+      expect(extractTextPayloads(onPartialReply.mock.calls)).toEqual(["Answer"]);
+      expect(extractTextPayloads(onBlockReply.mock.calls)).toEqual(["Answer"]);
+      expect(extractAgentEventPayloads(onAgentEvent.mock.calls)).toEqual([
+        expect.objectContaining({ text: "Answer", delta: "Answer" }),
+      ]);
+    }
+  });
+
+  it("releases a pending backtick opener exactly once when the stream ends", () => {
+    const onAgentEvent = vi.fn();
+    const emit = subscribe({ onAgentEvent });
+    emit({ type: "message_start", message: { role: "assistant" } });
+    emitAssistantTextDelta({ emit, delta: "```js" });
+    expect(onAgentEvent).not.toHaveBeenCalled();
+    emitAssistantTextEnd({ emit });
+    const payloads = extractAgentEventPayloads(onAgentEvent.mock.calls);
+    expect(payloads).toHaveLength(1);
+    expect(payloads.map((payload) => payload.delta).join("")).toBe("```js");
+  });
+
   it.each([
     {
       name: "closes hidden reasoning fences split across deltas",

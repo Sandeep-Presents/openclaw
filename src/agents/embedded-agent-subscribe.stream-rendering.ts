@@ -91,7 +91,11 @@ function splitTrailingFenceFragment(
 ): { text: string; pendingFenceFragment?: string } {
   const lineStart = text.lastIndexOf("\n") + 1;
   const line = text.slice(lineStart);
-  if ((!startsAtLineStart && lineStart === 0) || !/^(?: {0,3})(?:`+|~+)$/.test(line)) {
+  const lineWithoutCr = line.endsWith("\r") ? line.slice(0, -1) : line;
+  if (
+    (!startsAtLineStart && lineStart === 0) ||
+    !/^(?: {0,3})(?:`{1,2}|`{3,}[^`]*|~+)$/.test(lineWithoutCr)
+  ) {
     return { text };
   }
   return {
@@ -190,14 +194,14 @@ export function createStreamRendering({
         : undefined;
     let hiddenPendingFenceFragment = stateLocal.reasoningPendingFenceFragment;
     stateLocal.reasoningPendingFenceFragment = undefined;
-    const advanceHiddenCodeState = (segment: string) => {
+    const advanceHiddenCodeState = (segment: string, isScanTail = false) => {
       const hiddenInput = `${hiddenPendingFenceFragment ?? ""}${segment}`;
       hiddenPendingFenceFragment = undefined;
       if (!hiddenInput) {
         return;
       }
       const { text: hiddenFenceInput, pendingFenceFragment: pendingFenceFragmentLocal } =
-        options?.final
+        options?.final && isScanTail
           ? { text: hiddenInput, pendingFenceFragment: undefined }
           : splitTrailingFenceFragment(hiddenInput, hiddenFenceState?.atLineStart ?? true);
       hiddenPendingFenceFragment = pendingFenceFragmentLocal;
@@ -211,11 +215,23 @@ export function createStreamRendering({
     for (const match of scanText.matchAll(THINKING_TAG_SCAN_RE)) {
       const idx = match.index ?? 0;
       const isClose = match[1] === "/";
+      let isInsideHiddenCode = false;
       if (inThinking) {
         advanceHiddenCodeState(scanText.slice(lastCodeIndex, idx));
+        if (hiddenPendingFenceFragment) {
+          // A tag splits the scan, not the Markdown line. Classify the held
+          // header with its remaining line before interpreting a literal close.
+          const lineEnd = scanText.indexOf("\n", idx);
+          const lineTail = scanText.slice(idx, lineEnd === -1 ? undefined : lineEnd);
+          isInsideHiddenCode = buildCodeSpanIndex(
+            hiddenPendingFenceFragment + lineTail,
+            hiddenInlineState,
+            hiddenFenceState,
+          ).isInside(hiddenPendingFenceFragment.length);
+        } else {
+          isInsideHiddenCode = hiddenInlineState.open || Boolean(hiddenFenceState?.open);
+        }
       }
-      const isInsideHiddenCode =
-        inThinking && (hiddenInlineState.open || Boolean(hiddenFenceState?.open));
       lastCodeIndex = idx + match[0].length;
       if ((!inThinking && codeSpans.isInside(idx)) || isInsideHiddenCode) {
         if (inThinking) {
@@ -250,7 +266,7 @@ export function createStreamRendering({
       lastIndex = idx + match[0].length;
     }
     if (inThinking) {
-      advanceHiddenCodeState(scanText.slice(lastCodeIndex));
+      advanceHiddenCodeState(scanText.slice(lastCodeIndex), true);
     }
     if (!inThinking) {
       processed += scanText.slice(lastIndex);
