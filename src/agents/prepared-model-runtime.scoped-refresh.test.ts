@@ -982,48 +982,6 @@ describe("prepared model runtime scoped refresh", () => {
     ).toMatchObject({ agentId: "pro", config: nextConfig });
   });
 
-  it("drops a removed scoped provider's auth regardless of discovery outcome", async () => {
-    const profileId = "provider-a:default";
-    const profile = { type: "api_key" as const, provider: "provider-a", key: "fixture-key" };
-    mocks.preparedAuthStore = { version: 1, profiles: { [profileId]: profile } };
-    const config: OpenClawConfig = { agents: { entries: { pro: {} } } };
-    const learned = { provider: "provider-a", id: "learned", name: "Learned" };
-    const ready = makeCatalog([learned], {
-      providerOutcomes: [{ provider: "provider-a", profileId, status: "ready" }],
-    });
-    setPreparedModelFullCatalogAuth(
-      ready,
-      catalogAuth(
-        "provider-a",
-        { version: 1, profiles: { [profileId]: profile } },
-        { "provider-a": { type: "api_key", key: "fixture-key" } },
-      ),
-    );
-    const owner = await prepareCatalogOwner(config, ready);
-    const publishedAuth = async (status: "unavailable" | "ready") => {
-      const reply = makeCatalog([learned], {
-        providerOutcomes: [{ provider: "provider-a", profileId, status }],
-      });
-      setPreparedModelFullCatalogAuth(
-        reply,
-        catalogAuth("provider-a", { version: 1, profiles: {} }),
-      );
-      mocks.runPreparedModelCatalogWorker.mockImplementation(async () => reply);
-      const published = await owner.loadFullModelCatalog!({
-        refresh: true,
-        providerIds: ["provider-a"],
-      });
-      return getPreparedModelFullCatalogAuth(published);
-    };
-    // The worker re-read the credential source for the whole scope before
-    // discovery ran, so an unavailable outcome does not soften the omission
-    // into a pass-over: the removed entry must go either way.
-    const unavailableAuth = (await publishedAuth("unavailable"))!;
-    expect(unavailableAuth.credentials?.["provider-a"]).toBeUndefined();
-    const observedAuth = (await publishedAuth("ready"))!;
-    expect(observedAuth.credentials?.["provider-a"]).toBeUndefined();
-  });
-
   it("keeps a scoped provider's fresh auth when discovery is unavailable but the credential remains", async () => {
     const profileId = "provider-a:default";
     const profile = { type: "api_key" as const, provider: "provider-a", key: "fixture-key" };

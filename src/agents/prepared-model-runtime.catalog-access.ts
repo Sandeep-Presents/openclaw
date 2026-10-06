@@ -352,21 +352,15 @@ export async function createFullModelCatalogAccess(
       // is a removal observed at that read — regardless of the per-provider
       // discovery outcome. Discovery status speaks to model discovery, not to the
       // credential observation, so an unavailable outcome must not resurrect a
-      // removed credential into the published catalog.
-      const observedRemovals = new Set(
-        (workerCatalog.providerOutcomes ?? []).map((outcome) =>
-          normalizeProvider(outcome.provider),
-        ),
-      );
+      // removed credential into the published catalog. Observation therefore
+      // tracks the credential-read scope itself, including providers whose
+      // discovery emitted no outcome at all.
       const auth = providerIds
         ? replacePreparedModelCatalogAuth(
             retainedAuth,
             discoveredAuth,
             (provider) => scope.has(normalizeProvider(provider)),
-            {
-              observeScopedRemovals: true,
-              observedRemovals: (provider) => observedRemovals.has(normalizeProvider(provider)),
-            },
+            { observeScopedRemovals: true },
           )
         : discoveredAuth;
       const { legacyRows, ...publication } = prepareModelCatalogPublication(

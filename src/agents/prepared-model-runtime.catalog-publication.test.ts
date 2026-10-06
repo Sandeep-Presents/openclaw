@@ -426,6 +426,45 @@ describe("catalog publication session rows", () => {
     expect(published?.authModes.custom).toBeUndefined();
   });
 
+  it.each(["unavailable", "omitted"] as const)(
+    "stops publishing a scoped provider's auth when its logout refresh emits an %s outcome",
+    async (outcome) => {
+      const profile: AuthProfileCredential = {
+        type: "oauth",
+        provider: "custom",
+        access: "synthetic-access-before",
+        refresh: "synthetic-refresh-before",
+        expires: 1_900_000_000_000,
+        accountId: "synthetic-account",
+        email: "synthetic@example.test",
+      };
+      const { currentOwner } = await setup(true, profile);
+      const owner = await currentOwner();
+      // The worker re-read the credential source for the whole requested scope
+      // before discovery ran, so an auth omission is a removal observed at that
+      // read regardless of the discovery outcome — including a provider without
+      // a runtime catalog hook whose refresh emits no outcome at all.
+      const loggedOut = catalog();
+      if (outcome === "omitted") {
+        delete (loggedOut as Partial<ModelCatalogSnapshot>).providerOutcomes;
+      } else {
+        loggedOut.providerOutcomes = [{ provider: "custom", status: outcome }];
+      }
+      setPreparedModelFullCatalogAuth(loggedOut, {
+        providerAuthLabels: new Map(),
+        authStore: { version: 1, profiles: {} },
+        authModes: {},
+        credentials: {},
+      });
+      mocks.runPreparedModelCatalogWorker.mockImplementationOnce(async () => loggedOut);
+      await owner.loadFullModelCatalog!({ providerIds: ["custom"], refresh: true });
+      const published = getPreparedModelFullCatalogAuth(owner.readFullModelCatalog!()!);
+      expect(published?.authStore.profiles["custom:synthetic"]).toBeUndefined();
+      expect(published?.credentials?.custom).toBeUndefined();
+      expect(published?.authModes.custom).toBeUndefined();
+    },
+  );
+
   it("stops publishing a discovered provider's auth after an observed logout", async () => {
     const profile: AuthProfileCredential = {
       type: "oauth",
@@ -476,7 +515,7 @@ describe("catalog publication session rows", () => {
     saveAuthProfileStore(store, fixture.state.agentDir("default"));
     const config: OpenClawConfig = {
       agents: {
-        list: [{ id: "default", default: true }],
+        entries: { default: {} },
         defaults: { model: "custom/synthetic-model" },
       },
     };
