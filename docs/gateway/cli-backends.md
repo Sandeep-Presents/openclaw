@@ -137,6 +137,8 @@ CLI backends have two independent limits:
 - `agents.defaults.timeoutSeconds` limits the whole agent turn. Normal Gateway turns inherit the 48-hour default. `0` makes the turn budget unlimited. A stored override such as `600` replaces that default.
 - The CLI no-output watchdog stops a subprocess that remains silent. Each backend plugin owns separate fresh/resume profiles, and the watchdog remains active even when the overall turn budget is unlimited.
 
+The JSONL output parser does not limit how long a turn streams. It bounds only the memory it holds: one raw JSONL line, and the reply text, thinking, and in-progress tool input kept for the current turn, each up to 8 MiB. Streamed partial-message frames and tool results pass through without counting against that budget.
+
 Remove a short overall-timeout override to return to the 48-hour default, or set an explicit budget such as 12 hours:
 
 ```bash

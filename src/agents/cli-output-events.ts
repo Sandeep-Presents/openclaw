@@ -29,6 +29,7 @@ type PendingToolUse = {
   name: string;
   kind: CliToolUseStartDelta["kind"];
   inputJsonParts: string[];
+  inputJsonChars: number;
   /**
    * Complete input carried on `content_block_start`. Some CLI backends send the
    * whole tool input there and never emit `input_json_delta` chunks, so without
@@ -39,6 +40,15 @@ type PendingToolUse = {
 };
 
 type ToolUseTracker = ReturnType<typeof createToolUseTracker>;
+
+/** Characters of tool input still being assembled from `input_json_delta` frames. */
+export function pendingToolInputChars(tracker: ToolUseTracker): number {
+  let chars = 0;
+  for (const pending of tracker.pendingByIndex.values()) {
+    chars += pending.inputJsonChars;
+  }
+  return chars;
+}
 
 export function createToolUseTracker() {
   return {
@@ -281,6 +291,7 @@ export function dispatchClaudeCliStreamingToolEvent(params: {
             name,
             kind: block.type,
             inputJsonParts: [],
+            inputJsonChars: 0,
             ...(isRecord(block.input) ? { blockInput: block.input } : {}),
           });
         }
@@ -295,7 +306,11 @@ export function dispatchClaudeCliStreamingToolEvent(params: {
       isRecord(event.delta)
     ) {
       if (event.delta.type === "input_json_delta" && typeof event.delta.partial_json === "string") {
-        tracker.pendingByIndex.get(event.index)?.inputJsonParts.push(event.delta.partial_json);
+        const pending = tracker.pendingByIndex.get(event.index);
+        if (pending) {
+          pending.inputJsonParts.push(event.delta.partial_json);
+          pending.inputJsonChars += event.delta.partial_json.length;
+        }
       }
       return;
     }
