@@ -15,6 +15,7 @@ import { LEGACY_AGENT_ROSTER_RULES } from "../commands/doctor/shared/legacy-conf
 import { collectLegacyToolsBySenderIssues } from "../commands/doctor/shared/legacy-tools-by-sender.js";
 import { getContainerEnvFileEntryIssue } from "../infra/container-env-file.js";
 import { isPathInside } from "../infra/path-guards.js";
+import { collectMediaCliModelIssues } from "../media-understanding/cli-model-entry.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
 import {
   hasAvatarUriScheme,
@@ -65,6 +66,20 @@ export function collectHeartbeatOwnerWarnings(config: OpenClawConfig): ConfigVal
         },
       ]
     : [];
+}
+
+/**
+ * Advisory warnings for media model entries that resolve to CLI execution but
+ * cannot run. The check is the media resolver's own, so validation, Doctor, and
+ * execution agree; the runner refuses these entries before spawning and moves on
+ * to the next candidate, which an operator would otherwise not notice until an
+ * attachment arrives.
+ */
+export function collectMediaCliEntryWarnings(config: OpenClawConfig): ConfigValidationIssue[] {
+  return collectMediaCliModelIssues(config).map((issue) => ({
+    path: issue.path,
+    message: issue.message,
+  }));
 }
 
 function materializeBundledModelProviderOverlays(config: OpenClawConfig): OpenClawConfig {
