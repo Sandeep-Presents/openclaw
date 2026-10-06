@@ -206,6 +206,7 @@ vi.mock("./directive-handling.parse.js", async () => {
 });
 
 vi.mock("./get-reply-directive-aliases.js", () => ({
+  listConfiguredDirectiveAliases: vi.fn(() => []),
   reserveSkillCommandNames: vi.fn(),
   resolveConfiguredDirectiveAliases: vi.fn(() => []),
 }));
