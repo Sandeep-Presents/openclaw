@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { renderFormatErrorCopy } from "./assistant-request-failure-copy.js";
+import { FailoverError } from "./error.js";
 import {
   AUTH_INVALID_TOKEN_USER_TEXT,
+  formatBillingErrorMessage,
+  renderBillingFailureCopy,
   renderBillingReplyCopy,
   renderCliTimeoutReplyCopy,
   renderFailoverCodeUserCopy,
@@ -13,6 +16,55 @@ import {
 } from "./user-copy.js";
 
 describe("failover user copy", () => {
+  it("uses the first typed failure rather than a stale billing cause", () => {
+    const billing = new FailoverError("Credit balance is too low", {
+      reason: "billing",
+      authMode: "cli",
+    });
+    const timeout = new FailoverError("Timed out", { reason: "timeout", cause: billing });
+    expect(renderBillingFailureCopy(new Error("Wrapped", { cause: billing }))).toContain(
+      "account used by this CLI",
+    );
+    expect(renderBillingFailureCopy(timeout)).toBeUndefined();
+  });
+
+  it("ignores malformed serialized attempt containers", () => {
+    expect(
+      renderBillingFailureCopy({
+        name: "FailoverError",
+        reason: "billing",
+        attempts: "untrusted",
+        authMode: "cli",
+      }),
+    ).toContain("account used by this CLI");
+  });
+
+  it.each(["cli", "oauth", "token", "api_key", undefined])(
+    "preserves canonical billing recovery through repeated presentation for %s",
+    (authMode) => {
+      const copy = formatBillingErrorMessage("fixture", "model", authMode);
+      const rendered = renderSanitizedUserFacingText(copy, { errorContext: true });
+      expect(rendered).toBe(copy);
+      expect(renderSanitizedUserFacingText(rendered, { errorContext: true })).toBe(copy);
+    },
+  );
+
+  it.each([
+    "Credit balance is too low",
+    "⚠️ fixture returned a billing error — Credit balance is too low; private diagnostic",
+  ])("keeps raw billing failures generic: %s", (raw) => {
+    expect(renderSanitizedUserFacingText(raw, { errorContext: true })).toBe(
+      formatBillingErrorMessage(),
+    );
+  });
+
+  it("does not preserve diagnostics appended to canonical billing copy", () => {
+    const raw = `${formatBillingErrorMessage("fixture", undefined, "oauth")} private diagnostic`;
+    expect(renderSanitizedUserFacingText(raw, { errorContext: true })).toBe(
+      "⚠️ The AI service needs a short break. Please try again in a few minutes.",
+    );
+  });
+
   it.each([
     [undefined, "Troubleshooting: run `openclaw logs --follow` in a terminal."],
     ["", "Troubleshooting: run `openclaw logs --follow` in a terminal."],
@@ -189,6 +241,35 @@ describe("failover user copy", () => {
     expect(renderBillingReplyCopy({})).toBe(
       "⚠️ The AI service reported a billing problem. Check your account's credit balance and usage limits before trying again.",
     );
+  });
+
+  it("keeps native CLI billing recovery independent of subscription assumptions", () => {
+    const cliBilling = {
+      provider: "claude-cli",
+      model: "claude",
+      reason: "billing" as const,
+      authMode: "cli",
+    };
+    const expected =
+      "⚠️ claude-cli (claude) returned a billing error — check the account used by this CLI for billing or usage limits, then try again.";
+    expect(renderBillingReplyCopy(cliBilling)).toBe(expected);
+    expect(
+      renderBillingReplyCopy({
+        attempts: [
+          { provider: "anthropic", model: "claude", reason: "billing", authMode: "api_key" },
+          cliBilling,
+        ],
+      }),
+    ).toBe(expected);
+    expect(
+      renderBillingReplyCopy({
+        authMode: "cli",
+        attempts: [
+          { ...cliBilling, reason: "timeout" },
+          { provider: "anthropic", model: "claude", reason: "billing", authMode: "api_key" },
+        ],
+      }),
+    ).toBe(formatBillingErrorMessage());
   });
 
   it("renders provider-safe missing-key guidance", () => {

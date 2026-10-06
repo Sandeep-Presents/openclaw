@@ -1164,7 +1164,7 @@ describe("prepareCliRunContext", () => {
         resolveApiKeyForProfile,
       });
 
-      await fixture.prepare({
+      const context = await fixture.prepare({
         sessionKey: "agent:main:main",
         agentDir,
         provider: "claude-cli",
@@ -1173,6 +1173,7 @@ describe("prepareCliRunContext", () => {
         config: {},
       });
 
+      expect(context.authMode).toBe("cli");
       expect(prepareExecution).toHaveBeenCalledTimes(1);
       expect(prepareExecution).toHaveBeenCalledWith(
         expect.objectContaining({ authProfileId: undefined, authCredential: undefined }),

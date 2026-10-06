@@ -8,7 +8,7 @@ import type { AgentRunTerminalOutcome } from "../agent-run-terminal-outcome.js";
 import { normalizeAgentRunTerminalReceipt } from "../agent-run-terminal-receipt.js";
 import type { EmbeddedAgentRunEntryTerminal } from "../embedded-agent-runner/run-entry.js";
 import { getFailoverErrorCode } from "../failover/error.js";
-import { renderFailoverCodeUserCopy } from "../failover/user-copy.js";
+import { renderBillingFailureCopy, renderFailoverCodeUserCopy } from "../failover/user-copy.js";
 import {
   AGENT_RUN_SUPERSEDED_STOP_REASON,
   resolveAgentRunAbortLifecycleFields,
@@ -23,7 +23,11 @@ const formatLifecycleError = (error: unknown): string => {
   const staleInstall = classifyGatewayStaleInstall(error);
   return staleInstall
     ? staleInstall.error.message
-    : formatErrorMessageForDisplay(error, renderFailoverCodeUserCopy(getFailoverErrorCode(error)));
+    : (renderBillingFailureCopy(error) ??
+        formatErrorMessageForDisplay(
+          error,
+          renderFailoverCodeUserCopy(getFailoverErrorCode(error)),
+        ));
 };
 
 function resolveTerminalLogLevel(

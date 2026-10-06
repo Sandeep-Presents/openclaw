@@ -1768,6 +1768,11 @@ async function prepareCliRunContextWithinReadFence(
       params: preparedParams,
       bindQuestionAnswerAuthority,
       effectiveAuthProfileId,
+      // Node placement owns its login; Gateway credentials do not describe that account.
+      authMode:
+        executionTarget.kind === "node"
+          ? ("cli" as const)
+          : (authCredential?.type ?? ("cli" as const)),
       ...(authStore ? { authProfileStore: authStore } : {}),
       agentDir,
       started,

@@ -2,7 +2,10 @@ import { readStringValue } from "@openclaw/normalization-core/string-coerce";
 import { classifyOAuthRefreshFailureError } from "../../agents/auth-profiles/oauth-refresh-failure.js";
 import { renderAgentHarnessPreflightUserMessage } from "../../agents/embedded-agent-helpers/user-facing-text.js";
 import { getFailoverErrorCode } from "../../agents/failover/error.js";
-import { renderFailoverCodeUserCopy } from "../../agents/failover/user-copy.js";
+import {
+  renderBillingFailureCopy,
+  renderFailoverCodeUserCopy,
+} from "../../agents/failover/user-copy.js";
 import { AGENT_RUN_RESTART_ABORT_STOP_REASON } from "../../agents/run-termination.js";
 import { emitAgentEvent } from "../../infra/agent-events.js";
 import { formatErrorMessage } from "../../infra/errors.js";
@@ -121,6 +124,7 @@ export function createAgentLifecycleTerminalBackstop(params: {
       const oauthFailure = classifyOAuthRefreshFailureError(resultOrError);
       data.error =
         renderAgentHarnessPreflightUserMessage(resultOrError) ??
+        renderBillingFailureCopy(resultOrError) ??
         renderFailoverCodeUserCopy(getFailoverErrorCode(resultOrError)) ??
         (oauthFailure?.summary ? `⚠️ ${oauthFailure.summary}` : undefined) ??
         formatErrorMessage(resultOrError);

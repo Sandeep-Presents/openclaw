@@ -1,4 +1,4 @@
-import { renderSanitizedUserFacingText } from "../failover/user-copy.js";
+import { renderBillingFailureCopy, renderSanitizedUserFacingText } from "../failover/user-copy.js";
 import { isAgentHarnessPreflightError } from "../harness/errors.js";
 import { sanitizeUserFacingText } from "./sanitize-user-facing-text.js";
 
@@ -7,7 +7,8 @@ export function renderUserFacingText(
   text: unknown,
   opts?: { errorContext?: boolean; conversationContext?: string; streaming?: boolean },
 ): string {
-  return renderSanitizedUserFacingText(sanitizeUserFacingText(text, opts), opts);
+  const billingCopy = opts?.errorContext ? renderBillingFailureCopy(text) : undefined;
+  return renderSanitizedUserFacingText(sanitizeUserFacingText(billingCopy ?? text, opts), opts);
 }
 
 /** Only an explicit preflight copy can replace private diagnostic detail. */

@@ -5,7 +5,7 @@ import { attachErrorDiagnostic } from "../../infra/error-diagnostics.js";
 import { buildAgentRunTerminalOutcome } from "../agent-run-terminal-outcome.js";
 import { createCliTimeoutError } from "../cli-runner/no-output-timeout-policy.js";
 import { FailoverError } from "../failover-error.js";
-import { renderFailoverCodeUserCopy } from "../failover/user-copy.js";
+import { renderBillingReplyCopy, renderFailoverCodeUserCopy } from "../failover/user-copy.js";
 import { createAgentCommandLifecycle } from "./lifecycle.js";
 
 const { emitAgentEvent, lifecycleLog } = vi.hoisted(() => ({
@@ -32,6 +32,21 @@ function createLifecycle(runId: string) {
 }
 
 describe("createAgentCommandLifecycle", () => {
+  it.each(["cli", "oauth", "token", "api_key"])(
+    "renders %s billing facts before publishing terminal error text",
+    (authMode) => {
+      emitAgentEvent.mockClear();
+      const error = new FailoverError("Credit balance is too low", {
+        reason: "billing",
+        provider: "fixture",
+        model: "model",
+        authMode,
+      });
+      createLifecycle("billing").emitBasicError(error);
+      expect(emitAgentEvent.mock.calls[0]?.[0]?.data.error).toBe(renderBillingReplyCopy(error));
+    },
+  );
+
   it("publishes an outer timeout that arrives after a yielded result", () => {
     emitAgentEvent.mockClear();
     const controller = new AbortController();

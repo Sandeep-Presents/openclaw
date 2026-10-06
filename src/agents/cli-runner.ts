@@ -229,6 +229,7 @@ async function runPreparedCliAgentOwned(
   const cliFailoverContext = {
     provider: params.provider,
     model: context.modelId,
+    authMode: context.authMode,
     sessionId: params.sessionId,
     lane: params.lane,
   };

@@ -17,6 +17,7 @@ import { formatExecDeniedUserMessage } from "../exec-approval-result.js";
 import type { CliTimeoutContext, FallbackAttemptRecord } from "../failover-error.js";
 import { ERROR_DETAILS_HINT, ERROR_PREFIX_RE } from "./assistant-request-failure-copy.js";
 import { classifyFailoverReasonCore } from "./classify-core.js";
+import { findErrorProperty, isFailoverError } from "./error.js";
 import {
   isPeriodicUsageLimitErrorMessage,
   isProviderCompletedErrorFinishReasonMessage,
@@ -60,6 +61,9 @@ export function formatBillingErrorMessage(
   const modelName = model?.trim();
   const providerLabel =
     providerName && modelName ? `${providerName} (${modelName})` : providerName || undefined;
+  if (authMode === "cli") {
+    return `⚠️ ${providerLabel ?? "CLI provider"} returned a billing error — check the account used by this CLI for billing or usage limits, then try again.`;
+  }
   const isSubscriptionAuth = authMode === "oauth" || authMode === "token";
   if (isSubscriptionAuth) {
     return providerLabel
@@ -220,6 +224,17 @@ export function renderSanitizedUserFacingText(
       CONTEXT_OVERFLOW_ERROR_HEAD_RE.test(trimmed))
   ) {
     return "Context overflow: prompt too large for the model. Try /reset (or /new) to start a fresh session, or use a larger-context model.";
+  }
+  // Delivery and transcript projection may sanitize already-rendered errors again.
+  // Recognize only our complete billing copy, never infer credential facts from raw errors.
+  const billingLabel = /^⚠️ ([^\r\n]+) returned a billing error — /u.exec(trimmed)?.[1];
+  if (
+    billingLabel &&
+    ["cli", "oauth", "api_key"].some(
+      (authMode) => trimmed === formatBillingErrorMessage(billingLabel, undefined, authMode),
+    )
+  ) {
+    return trimmed;
   }
   if (reason === "billing" || reason === "rate_limit" || reason === "overloaded") {
     return reason === "billing"
@@ -443,14 +458,14 @@ export function renderBillingReplyCopy(params: {
   attempts?: readonly ReplyFallbackAttempt[];
 }): string {
   const attempts = params.attempts ?? [];
+  const hasAccountBillingContext = (authMode: string | undefined) =>
+    authMode === "oauth" || authMode === "token" || authMode === "cli";
   const billingFailure =
     attempts.length > 0
       ? attempts.find(
-          (attempt) =>
-            attempt.reason === "billing" &&
-            (attempt.authMode === "oauth" || attempt.authMode === "token"),
+          (attempt) => attempt.reason === "billing" && hasAccountBillingContext(attempt.authMode),
         )
-      : params.authMode === "oauth" || params.authMode === "token"
+      : hasAccountBillingContext(params.authMode)
         ? params
         : undefined;
   return billingFailure
@@ -460,6 +475,29 @@ export function renderBillingReplyCopy(params: {
         billingFailure.authMode,
       )
     : BILLING_ERROR_USER_MESSAGE;
+}
+
+/** Render prepared billing facts before a terminal adapter serializes the error. */
+export function renderBillingFailureCopy(error: unknown): string | undefined {
+  const failoverError = findErrorProperty(error, (candidate) =>
+    isFailoverError(candidate) ? candidate : undefined,
+  );
+  if (!failoverError) {
+    return undefined;
+  }
+  const attempts = Array.isArray(failoverError.attempts) ? failoverError.attempts : undefined;
+  if (
+    failoverError.reason !== "billing" &&
+    !attempts?.some((attempt) => attempt.reason === "billing")
+  ) {
+    return undefined;
+  }
+  return renderBillingReplyCopy({
+    provider: failoverError.provider,
+    model: failoverError.model,
+    authMode: failoverError.authMode,
+    attempts,
+  });
 }
 
 export function renderMissingApiKeyReplyCopy(params?: {
