@@ -14,14 +14,18 @@ import {
   stripCliImageTurnContext,
 } from "../agents/cli-image-turn-correlation.js";
 import { hashCliReseedPrompt, parseCliReseedPrompt } from "../agents/cli-runner/reseed-envelope.js";
+import { stripCliSessionDriftNote } from "../agents/cli-session.js";
 import type { AgentMessage } from "../agents/runtime/index.js";
 import { redactTranscriptMessage } from "../agents/transcript-redact.js";
+import { HEARTBEAT_PROMPT, HEARTBEAT_RESPONSE_TOOL_PROMPT } from "../auto-reply/heartbeat.js";
 import { isToolCallBlock, isToolResultBlock, resolveToolUseId } from "../chat/tool-content.js";
 import type { CliSessionReseedReceipt, SessionEntry } from "../config/sessions.js";
 import {
   getCliSessionBinding,
   normalizeCliSessionReseedReceipt,
 } from "../config/sessions/cli-session-binding.js";
+import { buildInterSessionPromptContext } from "../sessions/input-provenance.js";
+import { formatSystemTurnPrompt } from "../sessions/system-turn-prompt.js";
 import { attachOpenClawTranscriptMeta } from "./session-transcript-readers.js";
 
 const CLAUDE_CLI_PROVIDER = "claude-cli";
@@ -281,6 +285,85 @@ export function resolveClaudeCliPromptTextCandidates(
   );
 }
 
+// Queued system events as drainFormattedSystemEvents writes them: the block opens with
+// a timestamped line. A plain `System:` line a person typed does not match.
+// Untimestamped channel-summary lines on a session's first turn are not matched.
+const SYSTEM_EVENT_BLOCK =
+  /System: \[(?:\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[^\]\n]*|unknown-time)\] [^\n]*\n+(?:System: [^\n]*\n+)*/u
+    .source;
+// At the very start, or right after OpenClaw's own fenced context block.
+const LEADING_SYSTEM_EVENTS = new RegExp(
+  `(^|${/⟦openclaw:ctx⟧\n```json\n[^\n]*\n```\n\n/u.source})${SYSTEM_EVENT_BLOCK}(?=\\S)`,
+  "u",
+);
+const INTERNAL_PROMPT_PREFIX = new RegExp(
+  `^(?:${SYSTEM_EVENT_BLOCK})?${/(?:Note: The previous agent run was interrupted\. [^\n]*\n\n)?/u.source}`,
+  "u",
+);
+
+// Queued system events ride in front of the next human turn; they are not its text.
+function stripLeadingSystemEventLines(text: string): string {
+  return text.replace(LEADING_SYSTEM_EVENTS, "$1");
+}
+
+function resolveClaudeCliInternalSourceTool(text: string): string | undefined {
+  // Claude records Gateway SDK input and native commands as ordinary user rows,
+  // without OpenClaw provenance. Recover only complete producer-owned frames at
+  // this adapter; a matching canonical human row still wins during history merge.
+  if (stripCliSessionDriftNote(`${text}\n\n`) === "") {
+    return "cli_session_resume";
+  }
+  // A wake drains queued system events (for example Control UI reactions) and
+  // the interrupted-run hint ahead of its prompt; neither makes it a user turn.
+  const body = stripCliSessionDriftNote(text).replace(INTERNAL_PROMPT_PREFIX, "");
+  const header =
+    /^\[Inter-session message\] (?:sourceSession=(\S+) )?(?:sourceChannel=(\S+) )?sourceTool=(\S+) isUser=false\n/u.exec(
+      body,
+    );
+  if (
+    header &&
+    body.startsWith(
+      buildInterSessionPromptContext({
+        kind: "inter_session",
+        sourceSessionKey: header[1],
+        sourceChannel: header[2],
+        sourceTool: header[3],
+      }).text,
+    )
+  ) {
+    return header[3];
+  }
+  if (
+    body.startsWith(
+      "An async command you ran earlier has completed. The command completion details are:\n\n",
+    ) &&
+    body.includes("\n\nTreat this completion as an internal continuation, not a new user request. ")
+  ) {
+    return "exec";
+  }
+  // Default prompts only; a configured heartbeat prompt is not recognized here.
+  if (body.startsWith(HEARTBEAT_PROMPT) || body.startsWith(HEARTBEAT_RESPONSE_TOOL_PROMPT)) {
+    return "heartbeat";
+  }
+  // System turns carry the producer's tag, optionally behind the inbound timestamp envelope.
+  if (
+    body
+      .replace(/^\[[A-Z][a-z]{2} \d{4}-\d{2}-\d{2} \d{2}:\d{2}[^\]\n]*\] /u, "")
+      .startsWith(formatSystemTurnPrompt(""))
+  ) {
+    return "system_turn";
+  }
+  if (
+    /^<command-name>\/compact<\/command-name>\s*<command-message>compact<\/command-message>\s*<command-args>[\s\S]*<\/command-args>$/u.test(
+      body,
+    ) ||
+    /^<local-command-stdout>Compacted\s*<\/local-command-stdout>$/u.test(body)
+  ) {
+    return "claude_cli_command";
+  }
+  return undefined;
+}
+
 export function parseClaudeCliHistoryEntry(
   entry: ClaudeCliProjectEntry,
   cliSessionId: string,
@@ -376,6 +459,25 @@ export function parseClaudeCliHistoryEntry(
         }
       }
     }
+    const candidates = resolveClaudeCliPromptTextCandidates(entry, content);
+    const internalSourceTool =
+      candidates.length === 1 ? resolveClaudeCliInternalSourceTool(candidates[0]!.text) : undefined;
+    if (options.reseedMode === "recover" && !internalSourceTool) {
+      // Resume notes decorate real human turns too. Remove only the generated
+      // prefix, never hide the turn or discard sibling image/tool blocks.
+      if (typeof content === "string") {
+        content = stripLeadingSystemEventLines(stripCliSessionDriftNote(content));
+      } else {
+        for (const candidate of candidates) {
+          if (candidate.blockIndex !== undefined) {
+            const block = content[candidate.blockIndex];
+            if (isRecord(block)) {
+              block.text = stripLeadingSystemEventLines(stripCliSessionDriftNote(candidate.text));
+            }
+          }
+        }
+      }
+    }
     const cliImageTurnKey =
       typeof content === "string" ? readCliImageTurnContext(content) : undefined;
     if (cliImageTurnKey && typeof content === "string") {
@@ -387,11 +489,12 @@ export function parseClaudeCliHistoryEntry(
       ? "claude_cli_task_notification"
       : isClaudeCliVisibleHarnessContext(entry)
         ? "cli_harness_context"
-        : undefined;
+        : internalSourceTool;
     return attachOpenClawTranscriptMeta(
       {
         role: "user",
         content,
+        ...(internalSourceTool ? { display: false } : {}),
         ...(sourceTool ? { provenance: { kind: "internal_system", sourceTool } } : {}),
         ...(timestamp !== undefined ? { timestamp } : {}),
       },
