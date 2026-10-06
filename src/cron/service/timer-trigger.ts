@@ -196,6 +196,38 @@ export function resolveDisabledHeartbeatOneShotRetryDecision(params: {
   };
 }
 
+// A session-conflict deferral is not an execution failure: the payload never
+// ran, and busy writers release when their runs end. Deferrals therefore stay
+// outside the transient retry budget and repeat on this curve until the run
+// can claim the session (#165162).
+const DEFAULT_SESSION_CONFLICT_BACKOFF_SCHEDULE_MS = [
+  15_000,
+  30_000,
+  60_000,
+  2 * 60_000,
+  5 * 60_000,
+  10 * 60_000,
+];
+
+/** Paces a session-conflict deferral without consuming execution-failure retries. */
+export function resolveSessionConflictDeferralDecision(params: {
+  consecutiveSessionConflicts: number | undefined;
+}): {
+  backoffMs: number;
+  reason: string;
+} {
+  // applyJobResult already incremented the counter for this deferral, and
+  // errorBackoffMs indexes one-based, so the count selects the slot directly.
+  const consecutiveSessionConflicts = params.consecutiveSessionConflicts ?? 0;
+  return {
+    backoffMs: errorBackoffMs(
+      consecutiveSessionConflicts,
+      DEFAULT_SESSION_CONFLICT_BACKOFF_SCHEDULE_MS,
+    ),
+    reason: "session busy; deferred until the competing writer releases",
+  };
+}
+
 export function normalizeQueuedSystemEventHandle(
   result: CronSystemEventEnqueueResult,
 ): QueuedSystemEventHandle {

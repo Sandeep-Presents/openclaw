@@ -126,6 +126,14 @@ export function resolveJobErrorBackoffUntilMs(
   if (resolveJobLastRunStatus(job) !== "error" || !isFiniteTimestamp(job.state.lastRunAtMs)) {
     return undefined;
   }
+  // The latest outcome being a session-conflict deferral is not an execution
+  // failure: contention must not extend execution-error backoff past the
+  // scheduled slot, while the retained failure history stays untouched
+  // (#165162). applyJobResult zeroes this counter on every non-deferral
+  // outcome, so a positive count means the last run deferred.
+  if ((job.state.consecutiveSessionConflicts ?? 0) > 0) {
+    return undefined;
+  }
   const consecutiveErrorsRaw = job.state.consecutiveErrors;
   const consecutiveErrors =
     typeof consecutiveErrorsRaw === "number" && Number.isFinite(consecutiveErrorsRaw)

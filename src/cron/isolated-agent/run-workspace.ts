@@ -102,6 +102,7 @@ async function resolveCronSessionWorkspace(params: {
     throw new CronSessionLifecycleClaimError(
       params.sessionKey,
       "Bound automation session is mismatched.",
+      "rejected",
     );
   }
   const entry = params.entry;
@@ -133,6 +134,7 @@ async function resolveCronSessionWorkspace(params: {
       throw new CronSessionLifecycleClaimError(
         params.sessionKey,
         "Requester-scoped automation can only use its owning conversation’s workspace.",
+        "rejected",
       );
     }
   }
@@ -151,6 +153,7 @@ async function resolveCronSessionWorkspace(params: {
     throw new CronSessionLifecycleClaimError(
       params.sessionKey,
       "Bound automation workspace conflicts with its execution root.",
+      "rejected",
     );
   }
   const binding = entry.worktree;
@@ -178,6 +181,7 @@ async function resolveCronSessionWorkspace(params: {
       throw new CronSessionLifecycleClaimError(
         params.sessionKey,
         "Bound automation worktree is missing, retired, or mismatched.",
+        "rejected",
       );
     }
     const root = await fs.realpath(record.path);
@@ -186,6 +190,7 @@ async function resolveCronSessionWorkspace(params: {
       throw new CronSessionLifecycleClaimError(
         params.sessionKey,
         "Bound automation workspace does not match its managed worktree.",
+        "rejected",
       );
     }
   };

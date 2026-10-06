@@ -18,6 +18,7 @@ import { readSessionTranscriptWatermarkAsync } from "../../config/sessions/sessi
 import { isCronSessionKey } from "../../sessions/session-key-utils.js";
 import {
   beginSessionWorkAdmission,
+  isCompetingSessionWorkAdmissionActiveExcluding,
   isSessionWorkAdmissionActive,
 } from "../../sessions/session-lifecycle-admission.js";
 import type { SkillSnapshot } from "../../skills/types.js";
@@ -34,6 +35,7 @@ import type {
   CronToolsAllowExecTarget,
   CronToolsAllowExecTargetRequirement,
 } from "../scheduled-tool-policy.js";
+import type { CronAgentAdmissionDisposition } from "../types.js";
 import { setSessionRuntimeModel } from "./run.runtime.js";
 import { loadCronSessionEntryLatest, type resolveCronSession } from "./session.js";
 
@@ -76,14 +78,17 @@ export type CronRunContinuationSession = {
 };
 
 export class CronSessionLifecycleClaimError extends Error {
-  readonly admissionDisposition = "session-conflict" as const;
+  readonly admissionDisposition: CronAgentAdmissionDisposition;
 
   constructor(
     sessionKey: string,
     message = `Session "${sessionKey}" changed while starting work. Retry.`,
+    /** Genuine contention defers; permanent binding/workspace rejections do not. */
+    admissionDisposition: CronAgentAdmissionDisposition = "session-conflict",
   ) {
     super(message);
     this.name = "CronSessionLifecycleClaimError";
+    this.admissionDisposition = admissionDisposition;
   }
 }
 
@@ -235,6 +240,17 @@ export function createPersistCronSessionEntry(params: {
             resolveCronLifecycleRevisionIdentity(currentEntry.lifecycleRevision),
           ]),
         );
+        // A queued run must not replace lifecycle ownership while any other
+        // admitted writer (interactive turn, host compaction, delivery) owns
+        // the session identities. The run's own admission is excluded through
+        // its lifecycle-revision identity, so this never defers the run itself.
+        const sessionOwnedByCompetingAdmission =
+          currentEntry !== undefined &&
+          isCompetingSessionWorkAdmissionActiveExcluding(
+            params.cronSession.storePath,
+            [params.agentSessionKey, currentEntry.sessionId],
+            resolveCronLifecycleRevisionIdentity(params.cronSession.lifecycleRevision),
+          );
         const initialEntryMatchesOwnershipFields =
           currentEntry !== undefined &&
           params.cronSession.initialSessionEntry !== undefined &&
@@ -258,6 +274,7 @@ export function createPersistCronSessionEntry(params: {
           currentEntry.sessionId === initialEntry.sessionId;
         const canClaimInitialRevision = params.cronSession.initialSessionEntry
           ? !currentRevisionActive &&
+            !sessionOwnedByCompetingAdmission &&
             (initialEntryMatchesOwnershipFields || currentContinuesInitialGeneration)
           : currentEntry === undefined;
         // Concurrent persistent runs can resolve the same initial row. Once one
