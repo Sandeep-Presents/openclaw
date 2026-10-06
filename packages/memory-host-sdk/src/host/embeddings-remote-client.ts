@@ -77,6 +77,15 @@ function isNativeOpenAIEmbeddingRoute(provider: string, baseUrl: string): boolea
   );
 }
 
+/**
+ * Chat-only subscription routes (e.g. the ChatGPT/Codex responses API) serve chat
+ * traffic only — they have no embeddings endpoint, so their base URL must never
+ * leak into embedding requests. (#165476)
+ */
+function isChatOnlySubscriptionApi(api: string | undefined): boolean {
+  return api === "openai-chatgpt-responses";
+}
+
 /** Resolve base URL, bearer headers, header overrides, and SSRF policy for remote embeddings. */
 export async function resolveRemoteEmbeddingBearerClient(params: {
   provider: RemoteEmbeddingProviderId;
@@ -91,7 +100,13 @@ export async function resolveRemoteEmbeddingBearerClient(params: {
   });
   const remoteBaseUrl = normalizeOptionalString(remote?.baseUrl);
   const providerConfig = params.options.config.models?.providers?.[params.provider];
-  const providerBaseUrl = normalizeOptionalString(providerConfig?.baseUrl) || params.defaultBaseUrl;
+  // A chat-only subscription route has no embeddings endpoint: never inherit
+  // its base URL for embeddings — fall through to the adapter default instead.
+  const providerBaseUrl = isChatOnlySubscriptionApi(
+    normalizeOptionalString(providerConfig?.api),
+  )
+    ? params.defaultBaseUrl
+    : normalizeOptionalString(providerConfig?.baseUrl) || params.defaultBaseUrl;
   const baseUrl = remoteBaseUrl || providerBaseUrl;
   const providerOwnsDestination = embeddingProviderOwnsDestination({
     baseUrl,
