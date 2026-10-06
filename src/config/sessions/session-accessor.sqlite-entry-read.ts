@@ -288,19 +288,7 @@ function scanSessionEntryRows(
     if (firstLookupKey === undefined) {
       return undefined;
     }
-    let rows: ResolvedSessionEntryRow["row"][];
-    if (lookupKeys.length === 1) {
-      const queries = getExactSessionEntryQueries(database.db);
-      const row = queries.row(firstLookupKey, projection);
-      rows = row ? [row] : [];
-    } else {
-      rows = executeSqliteQuerySync(
-        database.db,
-        selectReadableSessionEntryRows(database, projection)
-          .where("session_key", "in", lookupKeys)
-          .orderBy("session_key", "asc"),
-      ).rows;
-    }
+    const rows = readSelectedSessionEntryRows(database, lookupKeys, projection);
     let selected: ResolvedSessionEntryRow | undefined;
     for (const row of rows) {
       const entry = parseReadableSqliteSessionEntryRow(database, row, projection);
@@ -360,6 +348,39 @@ export function readExactSessionEntryRow(
   });
 }
 
+/** Single-key and cohort readers share the same row selection and ordering. */
+function readSelectedSessionEntryRows(
+  database: OpenClawAgentDatabaseReader,
+  sessionKeys: readonly string[],
+  projection: SessionEntryProjection | "delivery",
+  validation?: "canonical",
+): ReadableSessionEntryRow[] {
+  if (sessionKeys.length === 1 && sessionKeys[0] !== undefined && projection !== "delivery") {
+    const queries = getExactSessionEntryQueries(database.db);
+    const row =
+      validation === "canonical"
+        ? queries.canonical(sessionKeys[0], projection)
+        : queries.row(sessionKeys[0], projection);
+    return row ? [row] : [];
+  }
+  return executeSqliteQuerySync(
+    database.db,
+    (validation === "canonical"
+      ? canonicalSessionValidationQuery(database, { metadata: true })
+          .select("session_nodes.updated_at")
+          .select(
+            sessionEntrySnapshotColumnsForKeys(
+              undefined,
+              projection === "delivery" ? "list" : projection,
+            ),
+          )
+      : selectReadableSessionEntryRows(database, projection)
+    )
+      .where("session_nodes.session_key", "in", sqliteStringSet(sessionKeys))
+      .orderBy("session_nodes.session_key", "asc"),
+  ).rows;
+}
+
 /** Capture exact rows once; failed cohort acquisition retains single-key error isolation. */
 export function prepareExactSessionEntryRowReads(
   database: OpenClawAgentDatabaseReader,
@@ -370,20 +391,7 @@ export function prepareExactSessionEntryRowReads(
   return runSqliteReadOperationSync(database.db, () => {
     let rows: ReadableSessionEntryRow[];
     try {
-      rows = executeSqliteQuerySync(
-        database.db,
-        (validation === "canonical"
-          ? canonicalSessionValidationQuery(database, { metadata: true })
-              .select("session_nodes.updated_at")
-              .select(
-                sessionEntrySnapshotColumnsForKeys(
-                  undefined,
-                  projection === "delivery" ? "list" : projection,
-                ),
-              )
-          : selectReadableSessionEntryRows(database, projection)
-        ).where("session_nodes.session_key", "in", sqliteStringSet(sessionKeys)),
-      ).rows;
+      rows = readSelectedSessionEntryRows(database, sessionKeys, projection, validation);
     } catch {
       // Native conversion errors have no row identity; exact reads preserve each key's error.
       return (sessionKey) =>
