@@ -23,6 +23,7 @@ import {
   isGeminiStreamJsonDialect,
   supportsCliJsonlToolEvents,
 } from "./cli-output-records.js";
+import { CLI_STREAM_JSON_RETAINED_ENTRY_CHARS } from "./cli-output-stream-limits.js";
 
 type PendingToolUse = {
   toolCallId: string;
@@ -42,17 +43,19 @@ type PendingToolUse = {
 
 type ToolUseTracker = ReturnType<typeof createToolUseTracker>;
 
-// Approximate per-entry cost of a Map or Set slot, charged on top of its strings.
-const TOOL_ID_ENTRY_OVERHEAD_CHARS = 64;
-
 /**
- * Characters of tool state the tracker holds: inputs still being assembled, plus
- * the IDs and names kept for the whole turn to deduplicate starts and results.
+ * Characters of tool state the tracker holds: open blocks (ID, name and input
+ * still being assembled), plus the IDs and names kept for the whole turn to
+ * deduplicate starts and results. A stopped block's charge moves to the latter.
  */
 export function retainedToolChars(tracker: ToolUseTracker): number {
   let chars = tracker.idChars;
   for (const pending of tracker.pendingByIndex.values()) {
-    chars += pending.inputChars;
+    chars +=
+      pending.toolCallId.length +
+      pending.name.length +
+      pending.inputChars +
+      CLI_STREAM_JSON_RETAINED_ENTRY_CHARS;
   }
   return chars;
 }
@@ -69,14 +72,14 @@ export function createToolUseTracker() {
 
 function rememberToolId(tracker: ToolUseTracker, ids: Set<string>, toolCallId: string): void {
   ids.add(toolCallId);
-  tracker.idChars += toolCallId.length + TOOL_ID_ENTRY_OVERHEAD_CHARS;
+  tracker.idChars += toolCallId.length + CLI_STREAM_JSON_RETAINED_ENTRY_CHARS;
 }
 
 function rememberToolName(tracker: ToolUseTracker, toolCallId: string, name: string): void {
   const previous = tracker.nameById.get(toolCallId);
   tracker.idChars +=
     previous === undefined
-      ? toolCallId.length + name.length + TOOL_ID_ENTRY_OVERHEAD_CHARS
+      ? toolCallId.length + name.length + CLI_STREAM_JSON_RETAINED_ENTRY_CHARS
       : name.length - previous.length;
   tracker.nameById.set(toolCallId, name);
 }
@@ -358,7 +361,8 @@ export function dispatchClaudeCliStreamingToolEvent(params: {
         const pending = tracker.pendingByIndex.get(event.index);
         if (pending) {
           pending.inputJsonParts.push(event.delta.partial_json);
-          pending.inputChars += event.delta.partial_json.length;
+          pending.inputChars +=
+            event.delta.partial_json.length + CLI_STREAM_JSON_RETAINED_ENTRY_CHARS;
         }
       }
       return;

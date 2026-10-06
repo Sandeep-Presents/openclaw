@@ -14,6 +14,10 @@ export const CLI_STREAM_JSON_OUTPUT_LIMITS = Object.freeze({
   maxRetainedChars: CLI_STREAM_JSON_MAX_RETAINED_CHARS,
 } satisfies CliStreamJsonOutputLimits);
 
+// Approximate cost of one array, Map or Set slot. Every entry a retained
+// collection holds pays it on top of its strings, so empty entries are not free.
+export const CLI_STREAM_JSON_RETAINED_ENTRY_CHARS = 64;
+
 /** Frames arbitrary stdout chunks while bounding each individual raw JSONL line. */
 export function frameBoundedCliJsonlChunk(
   state: { pending: string },

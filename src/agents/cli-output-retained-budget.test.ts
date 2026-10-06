@@ -3,7 +3,10 @@
 // per token; those lines are consumed and dropped, so they must not end the turn.
 import { describe, expect, it } from "vitest";
 import type { CliToolUseStartDelta } from "./cli-output-contracts.js";
-import { CLI_STREAM_JSON_OUTPUT_LIMITS } from "./cli-output-stream-limits.js";
+import {
+  CLI_STREAM_JSON_OUTPUT_LIMITS,
+  CLI_STREAM_JSON_RETAINED_ENTRY_CHARS,
+} from "./cli-output-stream-limits.js";
 import { createCliJsonlStreamingParser } from "./cli-output-stream.js";
 
 const SESSION_ID = "6f1c2a4e-0b7d-4c55-9a1e-2f3b4c5d6e7f";
@@ -295,4 +298,62 @@ describe("createCliJsonlStreamingParser retained budget", () => {
       expect(parser.getOutput()?.text).toBe(reply);
     },
   );
+
+  it("charges the IDs and names of tool blocks that are still open", () => {
+    const { parser } = createClaudeParser();
+    for (let index = 0; index < 3; index += 1) {
+      parser.push(
+        `${frame(
+          {
+            type: "content_block_start",
+            index,
+            content_block: {
+              type: "tool_use",
+              id: `toolu_${index}_${"i".repeat(3 * 1024 * 1024)}`,
+              name: "Write",
+              input: {},
+            },
+          },
+          index,
+        )}\n`,
+      );
+    }
+
+    expect(parser.getErrorText()).toContain("retained more than");
+  });
+
+  it.each([
+    {
+      name: "empty input_json_delta fragments in an open tool block",
+      prefix: `${frame(
+        {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "tool_use", id: "toolu_empty", name: "Write", input: {} },
+        },
+        0,
+      )}\n`,
+      line: JSON.stringify({
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "input_json_delta", partial_json: "" },
+        },
+      }),
+    },
+    { name: "empty item texts", prefix: "", line: JSON.stringify({ item: { text: "" } }) },
+  ])("refuses a flood of $name instead of growing a collection for free", ({ prefix, line }) => {
+    const { parser } = createClaudeParser();
+    const entries = Math.ceil(
+      CLI_STREAM_JSON_OUTPUT_LIMITS.maxRetainedChars / CLI_STREAM_JSON_RETAINED_ENTRY_CHARS,
+    );
+    parser.push(prefix);
+    const batch = `${line}\n`.repeat(4_096);
+    for (let pushed = 0; pushed <= entries && !parser.getErrorText(); pushed += 4_096) {
+      parser.push(batch);
+    }
+
+    expect(parser.getErrorText()).toContain("retained more than");
+  });
 });

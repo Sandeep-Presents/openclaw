@@ -48,6 +48,7 @@ import {
 import { appendCliResultText } from "./cli-output-results.js";
 import {
   CLI_STREAM_JSON_OUTPUT_LIMITS,
+  CLI_STREAM_JSON_RETAINED_ENTRY_CHARS,
   frameBoundedCliJsonlChunk,
   streamJsonOutputLimitErrorText,
 } from "./cli-output-stream-limits.js";
@@ -207,7 +208,7 @@ export function createCliJsonlStreamingParser(params: CliJsonlStreamingParserOpt
   // Runaway turns are bounded by the turn timeout and the model's output limits.
   const retainedChars = () => {
     while (countedTexts < texts.length) {
-      textsChars += texts[countedTexts]!.length;
+      textsChars += texts[countedTexts]!.length + CLI_STREAM_JSON_RETAINED_ENTRY_CHARS;
       countedTexts += 1;
     }
     // The reply is held in a fixed set of views (streamed text, the current
@@ -222,7 +223,9 @@ export function createCliJsonlStreamingParser(params: CliJsonlStreamingParserOpt
     );
     return (
       replyChars +
+      (output?.textParts?.length ?? 0) * CLI_STREAM_JSON_RETAINED_ENTRY_CHARS +
       thinkingTracker.emittedText.length +
+      thinkingTracker.streamedByIndex.size * CLI_STREAM_JSON_RETAINED_ENTRY_CHARS +
       customThinkingText.length +
       retainedToolChars(toolTracker)
     );
