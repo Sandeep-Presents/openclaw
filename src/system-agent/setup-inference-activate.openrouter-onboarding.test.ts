@@ -124,7 +124,7 @@ it("resolves a bare alias primary to the canonical model label", async () => {
       },
     },
     models: { providers: { openrouter: { apiKey: "synthetic-openrouter-key" } } },
-  } as OpenClawConfig;
+  } as unknown as OpenClawConfig;
   await fs.writeFile(configPath, JSON.stringify(config));
   const snapshot = await readSnapshot();
   expect(snapshot.valid, JSON.stringify(snapshot.issues)).toBe(true);
