@@ -969,6 +969,16 @@ extension View {
     }
 }
 
+/// Builds its content only when SwiftUI asks for the body. A long-press menu wrapped in this costs a row
+/// nothing until someone opens it; built inline, every row prepared every action on every transcript update.
+struct ChatDeferredContent<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        self.content()
+    }
+}
+
 struct ChatStreamingAssistantText {
     let sourceText: String
     let includesThinking: Bool
