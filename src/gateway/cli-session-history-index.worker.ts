@@ -8,7 +8,6 @@ import {
   hashCliImageTurnEntryId,
   readCliImageTurnContext,
 } from "../agents/cli-image-turn-correlation.js";
-import { stripCliSessionDriftNote } from "../agents/cli-session.js";
 import { isOpenClawCliImageCachePath } from "../agents/embedded-agent-runner/run/images.media-refs.js";
 import { stripInboundMetadata } from "../auto-reply/reply/strip-inbound-meta.js";
 // Imported CLI history merge helpers.
@@ -25,6 +24,7 @@ import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
 import { isImageMediaFact, readPersistedMediaFacts } from "../media/media-facts.js";
 import { stripInlineDirectiveTagsForDisplay } from "../utils/directive-tags.js";
+import { stripClaudeCliGeneratedUserPrefixes } from "./cli-session-history.claude.js";
 
 const INDEX_INSERT_BATCH_ROWS = 65;
 const INDEX_ORDINAL_BATCH_ROWS = 256;
@@ -102,7 +102,7 @@ function extractComparableText(
     return visible.replace(/\s+/g, " ").trim();
   };
   const normalized = normalizeText(stripResult.text);
-  const withoutDriftNote = isClaudeImport ? stripCliSessionDriftNote(rawText) : rawText;
+  const withoutDriftNote = isClaudeImport ? stripClaudeCliGeneratedUserPrefixes(rawText) : rawText;
   const driftNoteText =
     withoutDriftNote !== rawText
       ? normalizeText(stripTrailingCliImageMentions(withoutDriftNote.trim()).text)
