@@ -89,10 +89,7 @@ export async function executeWorkerTurn(
   input.abortSignal?.throwIfAborted();
   const turn = { ...input, config: preparedRuntime.snapshot.config };
   const modelRef = assertSupportedTurn(turn);
-  const { environment, bootstrapReceipt } = requireCurrentWorkerTurnEnvironment({
-    environments: params.environments,
-    placement,
-  });
+  const { environment, bootstrapReceipt } = requireCurrentWorkerTurnEnvironment(params);
   const inferencePlacement = workerInferencePlacement(environment);
   if (inferencePlacement === "worker") {
     const policy = createModelVisibilityPolicy({
@@ -174,6 +171,8 @@ export async function executeWorkerTurn(
     identity: placement,
     modelRef,
     startedAt,
+    // Captured before the launch persists its own admission.
+    admissionPersistedBeforeLaunch: recorder?.hasPersisted() === true,
     assertCurrent: assertContextCurrent,
     onBlocked: () => {
       blocked = true;
