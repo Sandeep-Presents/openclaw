@@ -895,6 +895,9 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
           maybeWakeRequesterAfterAllChildrenSettled(wakeParams({ settledEntry: child })),
         ).resolves.toBe(true);
         expect(deliverSpy).toHaveBeenCalledOnce();
+        expect(String(deliveredCallArg().triggerMessage)).toContain(
+          "a descendant result below it was still undelivered when waiting stopped",
+        );
         expect(completeBatchSpy).toHaveBeenCalledOnce();
         expect(completeBatchSpy).toHaveBeenCalledWith(["run-a"], 1, {
           delivered: true,
@@ -945,6 +948,10 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
           maybeWakeRequesterAfterAllChildrenSettled(wakeParams({ settledEntry: second })),
         ).resolves.toBe(true);
         expect(deliverSpy).toHaveBeenCalledOnce();
+        // The forced wake never certifies the unsettled descendant tree as settled.
+        const message = String(deliveredCallArg().triggerMessage);
+        expect(message).toContain("a descendant result below it was still undelivered");
+        expect(message).not.toContain("has now settled, including its descendants");
         expect(completeBatchSpy).toHaveBeenCalledOnce();
         expect(completeBatchSpy).toHaveBeenCalledWith(["run-a", "run-b"], 1, {
           delivered: true,

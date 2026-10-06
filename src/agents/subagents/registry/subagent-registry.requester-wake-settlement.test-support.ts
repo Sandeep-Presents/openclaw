@@ -228,6 +228,9 @@ export function registerRequesterWakeSettlementBoundaryTests({
     // terminalizing it as undelivered.
     await expect(runWake()).resolves.toBe(true);
     expect(getRequesterWakeCalls()).toHaveLength(1);
+    expect(getRequesterWakeCalls()[0]?.params?.message).toContain(
+      "a descendant result below it was still undelivered",
+    );
     expect(completions).toEqual([{ delivered: true, error: undefined }]);
     expect(registry.getSubagentRunByRunId("run-main-batch")?.requesterSettleWake).toBeUndefined();
     expect(countActiveDescendantRunsFromRuns(subagentRuns, requesterSessionKey)).toBe(1);

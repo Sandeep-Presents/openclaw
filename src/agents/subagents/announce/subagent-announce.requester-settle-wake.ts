@@ -466,16 +466,6 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
     const requesterSessionOrigin = normalizeDeliveryContext(params.requesterOrigin);
     const directOrigin = resolveAnnounceOrigin(requesterEntry, requesterSessionOrigin);
     const completionChannel = normalizeMessageChannel(directOrigin?.channel);
-    const wakeMessage = buildRequesterSettleWakeMessage({
-      findings: preparedFindings.text,
-      requireVisibleReply,
-      parentOnly,
-      yieldedFinalDeliverable: admissionMarker.yieldedFinalDeliverable,
-      children: completionRows,
-      recoveryChildren: recoveryRows,
-      preserveModelRouteNotice:
-        !completionChannel || !isDeliverableMessageChannel(completionChannel),
-    });
     if (params.signal?.aborted || !acquireBatch() || !refreshBatch()) {
       return false;
     }
@@ -494,12 +484,24 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
       return false;
     }
     state = readSharedBatchState(settledBatch);
-    if (!pauseNotice && currentDescendants.unsettled) {
+    const descendantsUnsettled = !pauseNotice && currentDescendants.unsettled;
+    if (descendantsUnsettled) {
       if (!(await deferBatch())) {
         return false;
       }
       state = readSharedBatchState(settledBatch);
     }
+    const wakeMessage = buildRequesterSettleWakeMessage({
+      findings: preparedFindings.text,
+      requireVisibleReply,
+      parentOnly,
+      yieldedFinalDeliverable: admissionMarker.yieldedFinalDeliverable,
+      descendantsUnsettled,
+      children: completionRows,
+      recoveryChildren: recoveryRows,
+      preserveModelRouteNotice:
+        !completionChannel || !isDeliverableMessageChannel(completionChannel),
+    });
     if (!preparedFindings.isCurrent()) {
       throw new SubagentAnnouncePreparationConflictError("Child completion preparation changed.");
     }
