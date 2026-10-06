@@ -194,9 +194,31 @@ struct MacGatewayChatTransport: OpenClawChatGatewayTransport {
 
     func fetchProgressCard(sessionKey: String, agentID: String?) async throws -> ProgressCard? {
         let target = self.sessionTarget(for: sessionKey, overrideAgentID: agentID)
-        let request = OpenClawChatGatewayRequests.progressCardGet(
+        let data = try await self.progressCardRequest(OpenClawChatGatewayRequests.progressCardGet(
             sessionKey: target.sessionKey,
-            agentID: target.agentID)
+            agentID: target.agentID))
+        return try OpenClawChatGatewayPayloadCodec.decodeProgressCard(
+            data,
+            agentID: OpenClawChatSessionKey.agentID(from: target.sessionKey) ?? target.agentID)
+    }
+
+    func clearProgressCard(sessionKey: String, agentID: String?, expectedRevision: Int) async throws {
+        let target = self.sessionTarget(for: sessionKey, overrideAgentID: agentID)
+        _ = try await self.progressCardRequest(OpenClawChatGatewayRequests.progressCardClear(
+            sessionKey: target.sessionKey,
+            agentID: target.agentID,
+            expectedRevision: expectedRevision))
+    }
+
+    func refreshProgressCard(sessionKey: String, agentID: String?, idempotencyKey: String) async throws {
+        let target = self.sessionTarget(for: sessionKey, overrideAgentID: agentID)
+        _ = try await self.progressCardRequest(OpenClawChatGatewayRequests.progressCardRefresh(
+            sessionKey: target.sessionKey,
+            agentID: target.agentID,
+            idempotencyKey: idempotencyKey))
+    }
+
+    private func progressCardRequest(_ request: OpenClawChatGatewayRequest) async throws -> Data {
         guard let route = await self.connection.captureServerLease() else { throw CancellationError() }
         if request.params["agentId"] != nil {
             guard let supported = await self.connection.supportsServerCapability(
@@ -206,11 +228,7 @@ struct MacGatewayChatTransport: OpenClawChatGatewayTransport {
                 throw OpenClawChatProgressCardError.ownerScopeUnavailable
             }
         }
-        let data = try await self.connection.request(
-            request, ifCurrentServerLease: route)
-        return try OpenClawChatGatewayPayloadCodec.decodeProgressCard(
-            data,
-            agentID: OpenClawChatSessionKey.agentID(from: target.sessionKey) ?? target.agentID)
+        return try await self.connection.request(request, ifCurrentServerLease: route)
     }
 
     func requestFullMessage(sessionKey: String, messageID: String) async throws -> OpenClawChatMessage? {

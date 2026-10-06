@@ -36,6 +36,10 @@ struct ChatProgressCard: View {
     let steps: [ProgressCardStep]
     let markdown: String?
     var isInline = false
+    var isRefreshing = false
+    var onRefresh: (() -> Void)?
+    var onClearSaved: (() -> Void)?
+    var onDismiss: (() -> Void)?
 
     @State private var isExpanded = false
 
@@ -78,19 +82,54 @@ struct ChatProgressCard: View {
 
     private var content: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Button {
-                withAnimation(self.reduceMotion ? nil : .easeInOut(duration: 0.2)) {
-                    self.isExpanded.toggle()
+            HStack(spacing: 0) {
+                Button(action: self.toggle) {
+                    self.summary
+                        .padding(.horizontal, self.isInline ? 0 : 12)
+                        .padding(.vertical, self.isInline ? 4 : (self.isExpanded ? 11 : 9))
+                        .contentShape(Rectangle())
                 }
-            } label: {
-                self.summary
-                    .padding(.horizontal, self.isInline ? 0 : 12)
-                    .padding(.vertical, self.isInline ? 4 : (self.isExpanded ? 11 : 9))
-                    .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .accessibilityLabel(self.summaryAccessibilityLabel)
+                .accessibilityHint(self.isExpanded ? "Collapse plan" : "Expand plan")
+
+                // Same order as the web client: refresh, clear saved, dismiss, collapse.
+                if !self.isInline {
+                    if let onRefresh {
+                        if self.isRefreshing {
+                            ProgressView()
+                                .controlSize(.mini)
+                                .frame(width: 32, height: 36)
+                                .accessibilityLabel("Refreshing plan")
+                        } else {
+                            self.headerButton(
+                                symbol: "arrow.clockwise",
+                                label: "Refresh plan",
+                                id: "refresh",
+                                action: onRefresh)
+                        }
+                    }
+                    if let onClearSaved {
+                        self.headerButton(
+                            symbol: "trash",
+                            label: "Clear saved plan for everyone",
+                            id: "clear-saved",
+                            action: onClearSaved)
+                    }
+                    if let onDismiss {
+                        self.headerButton(symbol: "xmark", label: "Dismiss plan", id: "dismiss", action: onDismiss)
+                    }
+                    Button(action: self.toggle) {
+                        Image(systemName: "chevron.down")
+                            .font(OpenClawChatTypography.caption2)
+                            .foregroundStyle(OpenClawChatTheme.muted)
+                            .rotationEffect(.degrees(self.isExpanded ? 180 : 0))
+                            .modifier(HeaderHitArea())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHidden(true)
+                }
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(self.summaryAccessibilityLabel)
-            .accessibilityHint(self.isExpanded ? "Collapse plan" : "Expand plan")
 
             if self.isExpanded {
                 Divider()
@@ -116,6 +155,29 @@ struct ChatProgressCard: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func toggle() {
+        withAnimation(self.reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+            self.isExpanded.toggle()
+        }
+    }
+
+    private func headerButton(
+        symbol: String,
+        label: LocalizedStringKey,
+        id: String,
+        action: @escaping () -> Void) -> some View
+    {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .modifier(HeaderHitArea())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+        .accessibilityIdentifier("chat-progress-card-\(id)")
     }
 
     private var summaryAccessibilityLabel: String {
@@ -159,11 +221,11 @@ struct ChatProgressCard: View {
                     .font(OpenClawChatTypography.captionSemiBold)
                     .foregroundStyle(OpenClawChatTheme.muted)
             }
-            Image(systemName: self.isInline ? "chevron.right" : "chevron.down")
-                .font(OpenClawChatTypography.caption2)
-                .foregroundStyle(OpenClawChatTheme.muted)
-                .rotationEffect(.degrees(self.isExpanded ? (self.isInline ? 90 : 180) : 0))
             if self.isInline {
+                Image(systemName: "chevron.right")
+                    .font(OpenClawChatTypography.caption2)
+                    .foregroundStyle(OpenClawChatTheme.muted)
+                    .rotationEffect(.degrees(self.isExpanded ? 90 : 0))
                 Spacer(minLength: 0)
             }
         }
@@ -212,5 +274,15 @@ struct ChatProgressCard: View {
         case .inProgress: "In progress"
         case .pending: "Pending"
         }
+    }
+}
+
+/// A 44-point touch target that takes 36 points of layout, so four controls fit a phone-width header.
+private struct HeaderHitArea: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
+            .padding(-4)
     }
 }
