@@ -33,6 +33,7 @@ import { normalizeEnv } from "./infra/env.js";
 import { fsSafeEnvInput } from "./infra/fs-safe-env.js";
 import { isMainModule } from "./infra/is-main.js";
 import { ensureOpenClawExecMarkerOnProcess } from "./infra/openclaw-exec-env.js";
+import "./infra/process-root-async-context.js";
 import { installProcessWarningFilter } from "./infra/warning-filter.js";
 import {
   getManagedNodeHostStatePath,

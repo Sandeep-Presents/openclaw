@@ -8,6 +8,7 @@ import { isAutomationsToolName } from "../agents/tools/automations-tool-name.js"
 import {
   createAdmittedGatewayToolCallerIdentity,
   withGatewayToolCallerIdentity,
+  withoutGatewayToolCallerIdentity,
 } from "../agents/tools/gateway-caller-context.js";
 import { getRuntimeConfig } from "../config/io.js";
 import { resolveSessionEntryAccessTarget } from "../config/sessions/session-accessor.js";
@@ -17,7 +18,13 @@ import {
   createHttpRequestAbortSignal,
   sendHttpRequestRejection,
 } from "../infra/http-request-lifecycle.js";
+import { runInProcessRootAsyncContext } from "../infra/process-root-async-context.js";
 import { logDebug, logWarn } from "../logger.js";
+import {
+  getPluginRuntimeGatewayRequestScope,
+  withPluginRuntimeGatewayContextResolver,
+  withPluginRuntimeGatewayRequestScope,
+} from "../plugins/runtime/gateway-request-scope.js";
 import { runOutsidePluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
 import { runOutsideGatewayRootWorkAdmission } from "../process/gateway-work-admission.js";
 import {
@@ -433,9 +440,16 @@ async function startMcpLoopbackServer(
             if (callerIdentity && boundClientGrant?.personalToolParticipants) {
               callerIdentity.personalToolParticipants = boundClientGrant.personalToolParticipants;
             }
-            response = await withGatewayToolCallerIdentity(callerIdentity, () =>
-              runWithTrackedCancellation(requestAbort.signal, handleRequest),
-            );
+            // Tool calls run under the minting run's own request scope, as in-process
+            // runtimes do, so its client stays the ceiling and its liveness still applies.
+            const runRequestScope = boundClientGrant?.requestScope;
+            const handleAsCaller = () =>
+              withGatewayToolCallerIdentity(callerIdentity, () =>
+                runWithTrackedCancellation(requestAbort.signal, handleRequest),
+              );
+            response = await (runRequestScope
+              ? withPluginRuntimeGatewayRequestScope(runRequestScope, handleAsCaller)
+              : handleAsCaller());
           } finally {
             markMcpLoopbackToolCallFinished(cliCaptureHandle);
           }
@@ -569,11 +583,26 @@ export async function ensureMcpLoopbackServer(port = 0): Promise<void> {
   }
   if (!activeMcpLoopbackServerPromise) {
     // The process-owned listener must outlive its creator's work, generation, and authority.
+    // Its handlers also must not inherit the starting request's caller: a write-only
+    // restart-recovery run would otherwise cap every later turn's bridge calls.
+    // Node serves each request in the listen-time async context, so the listener starts
+    // in the process-root context: no store of the starting turn (its transcript read
+    // fence, Cron creator authority) follows later requests.
     const work = new AsyncWorkScope();
-    activeMcpLoopbackServerPromise = runOutsideOperatorToolGatewayAuthority(() =>
-      runOutsidePluginRuntimeGenerationScope(() =>
-        runOutsideGatewayRootWorkAdmission(() =>
-          work.run(() => startMcpLoopbackServer(port, work)),
+    const resolveGatewayContext = getPluginRuntimeGatewayRequestScope()?.resolveGatewayContext;
+    activeMcpLoopbackServerPromise = runInProcessRootAsyncContext(() =>
+      runOutsideOperatorToolGatewayAuthority(() =>
+        withoutGatewayToolCallerIdentity(() =>
+          withPluginRuntimeGatewayContextResolver(
+            resolveGatewayContext,
+            () =>
+              runOutsidePluginRuntimeGenerationScope(() =>
+                runOutsideGatewayRootWorkAdmission(() =>
+                  work.run(() => startMcpLoopbackServer(port, work)),
+                ),
+              ),
+            { inheritRequestScope: false },
+          ),
         ),
       ),
     )
