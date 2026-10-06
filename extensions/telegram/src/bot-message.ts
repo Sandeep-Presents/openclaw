@@ -412,6 +412,18 @@ export const createTelegramMessageProcessor = (
             },
             onDeferredHeartbeat: () => participant.heartbeat(),
             deferredHeartbeatIntervalMs: participant.heartbeatIntervalMs,
+            onCancelled: async () => {
+              if (!adopted) {
+                // Every coalesced participant settles as cancelled, so each
+                // member's claim is released without spending retry budget.
+                void settle({ kind: "cancelled" }, "terminal");
+              }
+              // Intentional cancellation must reach the drain's budget-free
+              // settlement; abandonment would spend a retry attempt.
+              await (drainLifecycle?.onCancelled
+                ? drainLifecycle.onCancelled()
+                : drainLifecycle?.onAbandoned());
+            },
             onAbandoned: () => {
               if (!adopted) {
                 void settle({ kind: "failed-retryable", error: "turn-abandoned" }, "terminal");
@@ -430,8 +442,8 @@ export const createTelegramMessageProcessor = (
         }
         if (turnAbortSignal.aborted) {
           const abortResult: TelegramMessageProcessingResult =
-            turnAbortSignal.reason === "skipped"
-              ? { kind: "skipped" }
+            turnAbortSignal.reason === "skipped" || turnAbortSignal.reason === "cancelled"
+              ? { kind: turnAbortSignal.reason }
               : {
                   kind: "failed-retryable",
                   error:
@@ -483,8 +495,8 @@ export const createTelegramMessageProcessor = (
           }
           if (turnAbortSignal.aborted && !participant.abortSignal.aborted) {
             const abortResult: TelegramMessageProcessingResult =
-              turnAbortSignal.reason === "skipped"
-                ? { kind: "skipped" }
+              turnAbortSignal.reason === "skipped" || turnAbortSignal.reason === "cancelled"
+                ? { kind: turnAbortSignal.reason }
                 : {
                     kind: "failed-retryable",
                     error:

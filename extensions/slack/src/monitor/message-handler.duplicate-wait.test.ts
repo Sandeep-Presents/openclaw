@@ -119,6 +119,54 @@ describe("Slack duplicate wait admission", () => {
     expect(dispatchPreparedSlackMessageMock).not.toHaveBeenCalled();
   });
 
+  it("releases a deferred turn's replay claim before forwarding cancellation", async () => {
+    const handle = {
+      keys: ["cancelled"] as const,
+      commit: vi.fn(async () => true),
+      release: vi.fn(),
+    };
+    const turnAdoptionLifecycle = {
+      admission: "exclusive" as const,
+      abortSignal: new AbortController().signal,
+      onAdopted: vi.fn(),
+      onDeferred: vi.fn(),
+      onCancelled: vi.fn(async () => {}),
+      onAbandoned: vi.fn(),
+    };
+    let prepared:
+      | { turnAdoptionLifecycle?: { onDeferred: () => void; onCancelled?: () => Promise<void> } }
+      | undefined;
+    dispatchPreparedSlackMessageMock.mockImplementationOnce(async (value?: unknown) => {
+      prepared = value as typeof prepared;
+      prepared?.turnAdoptionLifecycle?.onDeferred();
+    });
+    const handler = createSlackMessageHandler({
+      ctx: createContext(),
+      dispatchReplayGuard: {
+        claim: async () => ({ kind: "claimed", handle }),
+      } as unknown as NonNullable<
+        Parameters<typeof createSlackMessageHandler>[0]["dispatchReplayGuard"]
+      >,
+    });
+    await handler(
+      { type: "message", channel: "C_TEST", user: "U_TEST", ts: "1709000000.008001" } as never,
+      { source: "message", turnAdoptionLifecycle },
+    );
+    await runOnFlush(enqueueMock.mock.calls.map(([entry]) => entry).filter(isRecord));
+    expect(handle.release).not.toHaveBeenCalled();
+
+    // The reply lane cancels the queued turn before it is admitted.
+    await prepared?.turnAdoptionLifecycle?.onCancelled?.();
+
+    expect(handle.release).toHaveBeenCalledOnce();
+    expect(handle.commit).not.toHaveBeenCalled();
+    expect(turnAdoptionLifecycle.onCancelled).toHaveBeenCalledOnce();
+    expect(turnAdoptionLifecycle.onAbandoned).not.toHaveBeenCalled();
+    expect(handle.release.mock.invocationCallOrder[0]).toBeLessThan(
+      turnAdoptionLifecycle.onCancelled.mock.invocationCallOrder[0] ?? 0,
+    );
+  });
+
   it("defers ingress before waiting for a duplicate's dispatch claim", async () => {
     const duplicate = createDeferred<boolean>();
     const onDispatchWaiting = vi.fn();
