@@ -65,6 +65,15 @@ export type TelegramMessageCache = {
     chatId: string | number;
     messageId?: string;
   }) => Promise<TelegramCachedMessageNode | null>;
+  /**
+   * Removes one precisely identified message from the cache (live map and
+   * persisted store). Returns true when an entry was actually retired.
+   */
+  retireMessage: (params: {
+    accountId: string;
+    chatId: string | number;
+    messageId: string | number;
+  }) => Promise<boolean>;
   recentBefore: (params: {
     accountId: string;
     chatId: string | number;
@@ -106,6 +115,7 @@ type TelegramMessageCacheBucket = {
   promoted?: boolean;
   promotePromise?: Promise<void>;
   chatRetention?: Map<string, "bounded" | "retained">;
+  retiredTombstones?: Map<string, number>;
 };
 
 const DEFAULT_MAX_MESSAGES = 5000;
@@ -115,6 +125,7 @@ const TELEGRAM_MESSAGE_CACHE_BUCKETS_KEY = Symbol.for("openclaw.telegram.message
 type TelegramMessageCachePersistentStore = {
   register(key: string, value: PersistedTelegramMessageCacheValue): Promise<void>;
   entries(): Promise<Array<{ key: string; value: unknown }>>;
+  delete?(key: string): Promise<boolean>;
 };
 
 type TelegramMessageCacheRetainedStore = Required<
@@ -126,6 +137,20 @@ type TelegramMessageCacheRetainedStore = Required<
 
 const RETAINED_MESSAGE_PAGE_SIZE = 256;
 const RETAINED_PROMOTION_BATCH_SIZE = 10_000;
+
+// Retirement tombstones keep a deleted preview from being resurrected by a
+// sibling bot's late observation (polling/ingress lag) or a replay after
+// reopening. Persisted in their own namespace so message records stay
+// untouched; bounded and short-lived because previews retire rarely.
+const TELEGRAM_MESSAGE_RETIREMENT_NAMESPACE = "telegram.message-cache.retirements";
+const TELEGRAM_MESSAGE_RETIREMENT_MAX_ENTRIES = 1024;
+const TELEGRAM_MESSAGE_RETIREMENT_TTL_MS = 24 * 60 * 60 * 1000;
+const RETIRED_TOMBSTONE_MEMORY_MAX = 4096;
+
+type TelegramMessageRetirementStore = {
+  lookup(key: string): Promise<{ retiredAt: number } | undefined>;
+  register(key: string, value: { retiredAt: number }): Promise<void>;
+};
 
 function telegramMessageCacheKey(params: {
   scopeKey: string | undefined;
@@ -406,6 +431,64 @@ export function createTelegramMessageCache(params?: {
     return store;
   };
 
+  let retirementStore: TelegramMessageRetirementStore | undefined;
+  const openRetirementStore = (): TelegramMessageRetirementStore | undefined => {
+    if (!retirementStore) {
+      const store = runtime?.state.openKeyedStore<{ retiredAt: number }>({
+        namespace: TELEGRAM_MESSAGE_RETIREMENT_NAMESPACE,
+        maxEntries: TELEGRAM_MESSAGE_RETIREMENT_MAX_ENTRIES,
+        defaultTtlMs: TELEGRAM_MESSAGE_RETIREMENT_TTL_MS,
+      });
+      if (!store) {
+        return undefined;
+      }
+      retirementStore = {
+        lookup: (key) => store.lookup(key),
+        register: (key, value) => store.register(key, value),
+      };
+    }
+    return retirementStore;
+  };
+
+  const retiredTombstones = (bucket.retiredTombstones ??= new Map<string, number>());
+
+  // Fence one cache key against late observations. Runs even when the row is
+  // already gone: the sibling may not have recorded the preview yet, and the
+  // absent-row case is exactly where the retirement would otherwise be lost.
+  const markRetired = (key: string): void => {
+    retiredTombstones.delete(key);
+    retiredTombstones.set(key, Date.now());
+    while (retiredTombstones.size > RETIRED_TOMBSTONE_MEMORY_MAX) {
+      const oldest = retiredTombstones.keys().next().value;
+      if (oldest === undefined) {
+        break;
+      }
+      retiredTombstones.delete(oldest);
+    }
+    const store = openRetirementStore();
+    if (store) {
+      void store.register(key, { retiredAt: Date.now() }).catch((error: unknown) => {
+        logVerbose(`telegram: failed to persist message retirement marker: ${String(error)}`);
+      });
+    }
+  };
+
+  const wasRetired = async (key: string): Promise<boolean> => {
+    if (retiredTombstones.has(key)) {
+      return true;
+    }
+    const store = openRetirementStore();
+    if (!store) {
+      return false;
+    }
+    const marker = await store.lookup(key).catch(() => undefined);
+    if (!marker) {
+      return false;
+    }
+    retiredTombstones.set(key, marker.retiredAt);
+    return true;
+  };
+
   const usesRetainedHistory = (accountId: string, chatId: string | number): boolean => {
     if (!hasRetainedStore) {
       return false;
@@ -438,6 +521,57 @@ export function createTelegramMessageCache(params?: {
     messages.delete(key);
     messages.set(key, entry);
     return entry;
+  };
+
+  const retireMessage: TelegramMessageCache["retireMessage"] = async ({
+    accountId,
+    chatId,
+    messageId,
+  }) => {
+    await hydrateMessageCacheBucket(bucket, maxMessages, scopeKey, hasRetainedStore);
+    if (usesRetainedHistory(accountId, chatId)) {
+      const id = retainedMessageId(String(messageId));
+      if (!id) {
+        return false;
+      }
+      const store = await openRetainedStore();
+      const key = telegramMessageCacheKey({ scopeKey, accountId, chatId, messageId: id });
+      markRetired(key);
+      let observation = await store.observe(key);
+      if (observation.value === undefined) {
+        return false;
+      }
+      for (;;) {
+        const result = await store.compareAndApply(key, observation.comparison, {
+          operation: "delete",
+          action: "delete",
+        });
+        if (result.status !== "conflict") {
+          return true;
+        }
+        observation = result.current;
+        if (observation.value === undefined) {
+          // A concurrent retire won the race; the message is gone either way.
+          return false;
+        }
+      }
+    }
+    const key = telegramMessageCacheKey({
+      scopeKey,
+      accountId,
+      chatId,
+      messageId: String(messageId),
+    });
+    markRetired(key);
+    const removed = messages.delete(key);
+    if (removed && bucket.persistentStore?.delete) {
+      try {
+        await bucket.persistentStore.delete(key);
+      } catch (error) {
+        logVerbose(`telegram: failed to retire persisted message cache entry: ${String(error)}`);
+      }
+    }
+    return removed;
   };
 
   const readNodes = async (options: {
@@ -559,6 +693,13 @@ export function createTelegramMessageCache(params?: {
             throw new Error("Telegram history requires a native message ID in the owning chat");
           }
           const key = telegramMessageCacheKey({ scopeKey, accountId, chatId, messageId: id });
+          if (await wasRetired(key)) {
+            // Late observation of a retired preview; keep it out of history.
+            if (messageId === currentObservation.node.messageId) {
+              recordedEntry = node;
+            }
+            continue;
+          }
           const cachedNode = await mergeRetainedCacheNode({ store, key, node, mode, botUserId });
           if (cachedNode && messageId === currentObservation.node.messageId) {
             recordedEntry = cachedNode;
@@ -569,6 +710,12 @@ export function createTelegramMessageCache(params?: {
           );
         } else {
           const key = telegramMessageCacheKey({ scopeKey, accountId, chatId, messageId });
+          if (await wasRetired(key)) {
+            if (messageId === currentObservation.node.messageId) {
+              recordedEntry = node;
+            }
+            continue;
+          }
           chatRetention.set(
             telegramMessageCacheKeyPrefix({ scopeKey, accountId, chatId }),
             "bounded",
@@ -641,6 +788,7 @@ export function createTelegramMessageCache(params?: {
       });
     },
     get,
+    retireMessage,
     recentBefore: async ({ accountId, chatId, messageId, threadId, limit }) => {
       const targetId = parseStrictPositiveInteger(messageId);
       return targetId === undefined
