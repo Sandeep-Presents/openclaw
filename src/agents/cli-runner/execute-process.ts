@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { prepareRuntimeAuthProfileExecution } from "../../config/sessions/session-entry-current-runtime.js";
 import { shouldLogVerbose } from "../../globals.js";
 import {
   resolveEventSessionKeyForPolicy,
@@ -304,6 +305,7 @@ export async function executeCliProcess(params: {
           assertProcessCurrent,
         );
         const managedRun = await supervisor.spawn({
+          prepareSpawn: () => prepareRuntimeAuthProfileExecution(runParams, assertProcessCurrent),
           assertCurrent: params.assertCurrent,
           runId: runParams.runId,
           scopeKey,

@@ -412,8 +412,8 @@ export function publishSessionSharingEntryChange(
       !incognito ? () => stageSessionSharingPublication(database, update.sessionKey) : undefined,
     );
   }
-  if (incognito && !sharingUnchanged) {
-    publishIncognitoSessionEntryChange(database, update);
+  if (incognito) {
+    publishIncognitoSessionEntryChange(database, update, sharingUnchanged);
   }
 }
 

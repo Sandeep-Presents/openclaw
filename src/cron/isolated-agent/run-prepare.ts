@@ -9,6 +9,7 @@ import {
   type PreparedModelRuntimeLease,
 } from "../../agents/prepared-model-runtime.js";
 import { resolveAgentModelPrimaryValue } from "../../config/model-input.js";
+import { bindConfiguredModelAuthProfileScope } from "../../config/sessions/auth-profile-override-provenance.js";
 import { resolveCreatorSandbox } from "../../gateway/operator-role-policy.js";
 import { isCronSessionKey, parseAgentSessionKey } from "../../routing/session-key.js";
 import {
@@ -537,7 +538,13 @@ export async function prepareCronRunContext(params: {
       provider,
       modelId: model,
       ...(provider === resolvedModelSelection.provider && resolvedModelSelection.configuredProfileId
-        ? { configuredProfileId: resolvedModelSelection.configuredProfileId }
+        ? {
+            configuredProfileId: resolvedModelSelection.configuredProfileId,
+            configuredProfileIsDefault:
+              resolvedModelSelection.modelSource === "default" ||
+              resolvedModelSelection.modelSource === "agent" ||
+              resolvedModelSelection.modelSource === "subagent",
+          }
         : {}),
       harnessRuntime: effectiveAgentRuntime,
       agentDir,
@@ -557,6 +564,7 @@ export async function prepareCronRunContext(params: {
       authProfileId,
       authProfileIdSource: authSelection?.source,
     };
+    bindConfiguredModelAuthProfileScope(liveSelection, authSelection?.configuredPrimaryProvider);
     const runContinuationSession = usesExactRunSession
       ? createCronRunContinuationSession({
           cronSession,

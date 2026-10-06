@@ -15,6 +15,8 @@ export type NodeInvokeParams = {
   sessionKey?: string;
   /** Receives the id and armed hard deadline after a successful dispatch. */
   onDispatchReady?: (invokeId: string, deadlineAtMs?: number) => void;
+  /** Await current caller-owned restrictions after pairing and before transport handoff. */
+  prepareDispatch?: () => Promise<void>;
   /** Revalidates caller authority at the registry-owned transport handoff. */
   isDispatchAuthorized?: () => boolean;
 };

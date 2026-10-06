@@ -4,6 +4,7 @@ import {
   resolveProviderIdForAuth,
   type ProviderAuthAliasLookupParams,
 } from "../../agents/provider-auth-aliases.js";
+import { bindConfiguredModelAuthProfileScope } from "../../config/sessions/auth-profile-override-provenance.js";
 import type { FollowupRun } from "./queue.js";
 
 /** Keeps an auth profile only when the current provider shares the primary auth scope. */
@@ -67,6 +68,7 @@ export function resolveFallbackCandidateRun(
     model,
     authProfileId: probe.fallbackAuthProfileId,
   };
+  bindConfiguredModelAuthProfileScope(candidateRun);
   if (probe.fallbackAuthProfileIdSource) {
     candidateRun.authProfileIdSource = probe.fallbackAuthProfileIdSource;
   } else {

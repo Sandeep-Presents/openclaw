@@ -22,6 +22,7 @@ import { resolveReplyExpectation } from "../../agents/reply-completion.js";
 import { createAgentPatchedSessionModelRunGuard } from "../../agents/session-model-auto-revert.js";
 import { readChannelContextGatewayContextResolver } from "../../channels/message-access/admission-evidence.js";
 import type { SessionEntry } from "../../config/sessions.js";
+import { replaceRuntimeAuthProfileSelection } from "../../config/sessions/auth-profile-override-provenance.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import { logVerbose } from "../../globals.js";
 import {
@@ -132,8 +133,7 @@ async function executeAgentTurnInternalLoop(
   ): void => {
     run.provider = err.provider;
     run.model = err.model;
-    run.authProfileId = err.authProfileId;
-    run.authProfileIdSource = err.authProfileId ? err.authProfileIdSource : undefined;
+    replaceRuntimeAuthProfileSelection(run, err);
     run.autoFallbackPrimaryProbe = undefined;
     // Keep runtime paired with the error's model/auth winner even if the
     // active in-memory session snapshot lags the persisted directive write.

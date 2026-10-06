@@ -81,13 +81,13 @@ describe("Claude CLI adapter equivalence", () => {
 
   it("privately acknowledges isolated completion preparation", () => {
     const backend = buildAnthropicCliBackend();
-    const prepared = backend.prepareExecution?.({
+    const prepared = backend.prepareExecutionV2?.({
       workspaceDir: "/tmp/openclaw-claude-cli",
       provider: "claude-cli",
       modelId: "claude-opus-4-8",
       isolatedCompletionPrompt: "TASK: return JSON",
       isolatedCompletionSystemPrompt: "Return JSON.",
-    } as Parameters<NonNullable<typeof backend.prepareExecution>>[0] & {
+    } as Parameters<NonNullable<typeof backend.prepareExecutionV2>>[0] & {
       isolatedCompletionPrompt: string;
       isolatedCompletionSystemPrompt: string;
     }) as { env?: Record<string, string>; isolatedCompletionEnforced?: true };
@@ -667,8 +667,8 @@ describe("normalizeClaudeBackendConfig", () => {
     };
     const prepared = vi.fn();
     const executions = [
-      Promise.resolve(backend.prepareExecution?.(context)).then(prepared),
-      Promise.resolve(backend.prepareExecution?.(context)).then(prepared),
+      Promise.resolve(backend.prepareExecutionV2?.(context)).then(prepared),
+      Promise.resolve(backend.prepareExecutionV2?.(context)).then(prepared),
     ];
     await Promise.resolve();
     expect(runCommandWithTimeout).toHaveBeenCalledOnce();
@@ -690,7 +690,7 @@ describe("normalizeClaudeBackendConfig", () => {
         baseArgs: backend.config.args ?? [],
       }),
     ).toContain(CLAUDE_CACHE_FLAG);
-    await backend.prepareExecution?.(context);
+    await backend.prepareExecutionV2?.(context);
     expect(runCommandWithTimeout).toHaveBeenCalledOnce();
   });
 
@@ -712,7 +712,7 @@ describe("normalizeClaudeBackendConfig", () => {
     const backend = registerCliBackend.mock.calls[0]?.[0] as ReturnType<
       typeof buildAnthropicCliBackend
     >;
-    await backend.prepareExecution?.({
+    await backend.prepareExecutionV2?.({
       workspaceDir: "/tmp",
       provider: "claude-cli",
       modelId: "claude-haiku-4-5",
@@ -768,7 +768,7 @@ describe("normalizeClaudeBackendConfig", () => {
     const backend = buildAnthropicCliBackend();
 
     expect(
-      backend.prepareExecution?.({
+      backend.prepareExecutionV2?.({
         workspaceDir: "/tmp/openclaw-claude-cli",
         provider: "claude-cli",
         modelId: "claude-opus-4-7",
@@ -785,7 +785,7 @@ describe("normalizeClaudeBackendConfig", () => {
   it("forwards the selected OAuth profile through Claude's private descriptor", async () => {
     const backend = buildAnthropicCliBackend();
 
-    const prepared = backend.prepareExecution?.({
+    const prepared = backend.prepareExecutionV2?.({
       workspaceDir: "/tmp/openclaw-claude-cli",
       provider: "claude-cli",
       modelId: "claude-opus-4-7",
@@ -797,7 +797,7 @@ describe("normalizeClaudeBackendConfig", () => {
         refresh: "selected-refresh-token",
         expires: Date.now() + 60_000,
       },
-    } as Parameters<NonNullable<typeof backend.prepareExecution>>[0] & {
+    } as Parameters<NonNullable<typeof backend.prepareExecutionV2>>[0] & {
       authCredential: {
         type: "oauth";
         provider: string;
@@ -818,7 +818,7 @@ describe("normalizeClaudeBackendConfig", () => {
     expect(prepared.secretInput.fingerprint).not.toContain("selected-access-token");
     expect(prepared.secretInput.createData().toString("utf8")).toBe("selected-access-token");
 
-    const sameToken = backend.prepareExecution?.({
+    const sameToken = backend.prepareExecutionV2?.({
       workspaceDir: "/tmp/openclaw-claude-cli",
       provider: "claude-cli",
       modelId: "claude-opus-4-7",
@@ -827,10 +827,10 @@ describe("normalizeClaudeBackendConfig", () => {
         provider: "claude-cli",
         token: "selected-access-token",
       },
-    } as Parameters<NonNullable<typeof backend.prepareExecution>>[0] & {
+    } as Parameters<NonNullable<typeof backend.prepareExecutionV2>>[0] & {
       authCredential: { type: "token"; provider: string; token: string };
     }) as ClaudePreparedExecutionWithSecret;
-    const rotatedToken = backend.prepareExecution?.({
+    const rotatedToken = backend.prepareExecutionV2?.({
       workspaceDir: "/tmp/openclaw-claude-cli",
       provider: "claude-cli",
       modelId: "claude-opus-4-7",
@@ -839,7 +839,7 @@ describe("normalizeClaudeBackendConfig", () => {
         provider: "claude-cli",
         token: "rotated-access-token",
       },
-    } as Parameters<NonNullable<typeof backend.prepareExecution>>[0] & {
+    } as Parameters<NonNullable<typeof backend.prepareExecutionV2>>[0] & {
       authCredential: { type: "token"; provider: string; token: string };
     }) as ClaudePreparedExecutionWithSecret;
     expect(sameToken.secretInput.fingerprint).toBe(prepared.secretInput.fingerprint);
@@ -857,7 +857,7 @@ describe("normalizeClaudeBackendConfig", () => {
     const backend = buildAnthropicCliBackend();
 
     expect(() =>
-      backend.prepareExecution?.({
+      backend.prepareExecutionV2?.({
         workspaceDir: "/tmp/openclaw-claude-cli",
         provider: "claude-cli",
         modelId: "claude-opus-4-7",
@@ -869,7 +869,7 @@ describe("normalizeClaudeBackendConfig", () => {
           refresh: "expired-refresh-token",
           expires: Date.now() - 60_000,
         },
-      } as Parameters<NonNullable<typeof backend.prepareExecution>>[0] & {
+      } as Parameters<NonNullable<typeof backend.prepareExecutionV2>>[0] & {
         authCredential: {
           type: "oauth";
           provider: string;
@@ -884,7 +884,7 @@ describe("normalizeClaudeBackendConfig", () => {
   it("runs native Claude login through the CLI transport without forwarding credentials", () => {
     const backend = buildAnthropicCliBackend();
 
-    const prepared = backend.prepareExecution?.({
+    const prepared = backend.prepareExecutionV2?.({
       workspaceDir: "/tmp/openclaw-claude-cli",
       provider: "claude-cli",
       modelId: "claude-opus-4-7",
@@ -900,7 +900,7 @@ describe("normalizeClaudeBackendConfig", () => {
   it("forwards a selected API-key profile through Claude's private descriptor", async () => {
     const backend = buildAnthropicCliBackend();
 
-    const prepared = backend.prepareExecution?.({
+    const prepared = backend.prepareExecutionV2?.({
       workspaceDir: "/tmp/openclaw-claude-cli",
       provider: "claude-cli",
       modelId: "claude-opus-4-7",
@@ -910,7 +910,7 @@ describe("normalizeClaudeBackendConfig", () => {
         provider: "claude-cli",
         key: "selected-api-key",
       },
-    } as Parameters<NonNullable<typeof backend.prepareExecution>>[0] & {
+    } as Parameters<NonNullable<typeof backend.prepareExecutionV2>>[0] & {
       authCredential: {
         type: "api_key";
         provider: string;

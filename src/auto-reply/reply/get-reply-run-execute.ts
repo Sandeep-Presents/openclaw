@@ -21,6 +21,7 @@ import {
 } from "../../agents/tool-policy.js";
 import { readChannelContextAdmissionEvidence } from "../../channels/message-access/admission-evidence.js";
 import { getRuntimeConfig } from "../../config/config.js";
+import { bindConfiguredModelAuthProfileScope } from "../../config/sessions/auth-profile-override-provenance.js";
 import { conversationIdentityFromMsgContext } from "../../config/sessions/conversation-identity.js";
 import { resolveGroupSessionKey } from "../../config/sessions/group.js";
 import { sessionPersonalProfileId } from "../../config/sessions/session-entry-provenance.js";
@@ -95,6 +96,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
     isActive,
     authProfileId,
     authProfileIdSource,
+    configuredPrimaryProvider,
   } = state;
   const {
     params,
@@ -587,6 +589,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
     },
   };
   const sourceReplyDeliveryRuntimeOptions = opts as SourceReplyDeliveryRuntimeOptions | undefined;
+  bindConfiguredModelAuthProfileScope(followupRun.run, configuredPrimaryProvider);
   const channelOwnerAuthority = getCommandOwnerAuthority(sessionCtx);
   if (command.senderIsOwner && channelOwnerAuthority) {
     bindCommandOwnerAuthority(followupRun.run, channelOwnerAuthority);

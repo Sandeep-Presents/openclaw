@@ -11,7 +11,6 @@ import {
   spawnServiceChildRelay,
 } from "../spawn-broker/relay-integration.js";
 import { createManagedChildStdin } from "./adapters/child-stdin.js";
-import { toStringEnv } from "./adapters/env.js";
 import { createProcessAdapterEvents } from "./adapters/process-events.js";
 import { createServiceChildCleanupDeadline } from "./service-child-cleanup-deadline.js";
 import { readServiceChildControl } from "./service-child-control-reader.js";
@@ -21,7 +20,6 @@ import {
   readServiceChildMessage,
   sendServiceChildMessage,
   type ServiceChildAnchorMessage,
-  type ServiceChildStart,
 } from "./service-child-protocol.js";
 import {
   prepareServiceChildRelay,
@@ -391,10 +389,21 @@ export async function createServiceChildRelayAdapter(
     }
     inboundSequence = message.sequence;
     if (message.type === "prepared" && state === "starting" && params.initiateSpawn) {
-      void sendControlMessage(
-        { type: "launch", generation, sequence: ++outboundSequence },
-        params.initiateSpawn,
-      ).catch((error: unknown) => loseIdentity(String(error)));
+      const initiateSpawn = params.initiateSpawn;
+      void (async () => {
+        if (params.prepareSpawn) {
+          await params.prepareSpawn();
+        }
+        params.assertCurrent?.();
+        if (state !== "starting" || requestedSignal || params.abortSignal?.aborted) {
+          throw new Error("service child construction aborted");
+        }
+        params.beforeSpawn?.();
+        await sendControlMessage(
+          { type: "launch", generation, sequence: ++outboundSequence },
+          initiateSpawn,
+        );
+      })().catch((error: unknown) => loseIdentity(String(error)));
     } else if (message.type === "ready" && state === "starting") {
       // Ready is not construction-complete: secret delivery can still be
       // blocked. Keep abort protection until the adapter returns.
@@ -572,23 +581,7 @@ export async function createServiceChildRelayAdapter(
     }
   });
 
-  const start: ServiceChildStart = {
-    type: params.initiateSpawn ? "prepare" : "start",
-    generation,
-    command: params.command,
-    args: params.args,
-    argv0: params.argv0,
-    cwd: params.cwd,
-    env: params.env ? toStringEnv(params.env) : undefined,
-    stdinMode: params.stdinMode,
-    secretFd: params.secretInput?.fd,
-    controlFd,
-    ...preparation.ownership,
-    treeOwnership: useLinuxSubreaper ? "linux-subreaper" : undefined,
-    nativeProcessOwner: preparation.nativeProcessOwner,
-    ...(control ? { acknowledgeClosing: true as const } : {}),
-    windowsShellCommand: params.windowsShellCommand,
-  };
+  const start = preparation.createStartMessage(generation, Boolean(control));
   const stdin = createManagedChildStdin(child.stdin);
   params.abortSignal?.addEventListener("abort", onConstructionAbort, { once: true });
   const ready = (async () => {
@@ -597,6 +590,13 @@ export async function createServiceChildRelayAdapter(
       params.assertCurrent?.();
       if (params.abortSignal?.aborted) {
         onConstructionAbort();
+      }
+      if (params.prepareSpawn) {
+        await params.prepareSpawn();
+        params.assertCurrent?.();
+        if (params.abortSignal?.aborted) {
+          throw new Error("child construction aborted");
+        }
       }
       params.beforeSpawn?.();
       await Promise.race([sendServiceChildMessage(child, start), constructionAbort.promise]);

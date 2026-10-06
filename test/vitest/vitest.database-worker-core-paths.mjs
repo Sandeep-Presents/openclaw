@@ -60,6 +60,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/system-agent/rescue-message.test.ts",
   "src/system-agent/transcript-store.test.ts",
   "src/infra/restart-sentinel.update-result.test.ts",
+  "src/auto-reply/reply/agent-runner-cli-account.process.test.ts",
   "src/auto-reply/reply/conversation-turn-capture.test.ts",
   "src/auto-reply/reply/agent-runner-result-accounting.persistence.test.ts",
   "src/auto-reply/reply/agent-runner-result-accounting.fallback.test.ts",
