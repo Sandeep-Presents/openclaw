@@ -844,7 +844,7 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
   });
 
   describe("restart-persistent outbox", () => {
-    it("keeps active overlap pending and only caps a stale settle blocker", async () => {
+    it("keeps active overlap pending and stops waiting on a stale settle blocker", async () => {
       const child = makeSettledChild({
         runId: "run-a",
         delivery: { status: "pending" },
@@ -889,13 +889,67 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
         expect(transitionBatchSpy).toHaveBeenCalledOnce();
         expect(completeBatchSpy).not.toHaveBeenCalled();
         await vi.advanceTimersByTimeAsync(30_000);
-        await maybeWakeRequesterAfterAllChildrenSettled(wakeParams({ settledEntry: child }));
+        // The spent stale-descendant wait delivers the drained batch; it never
+        // terminalizes completed results as undelivered.
+        await expect(
+          maybeWakeRequesterAfterAllChildrenSettled(wakeParams({ settledEntry: child })),
+        ).resolves.toBe(true);
+        expect(deliverSpy).toHaveBeenCalledOnce();
+        expect(completeBatchSpy).toHaveBeenCalledOnce();
         expect(completeBatchSpy).toHaveBeenCalledWith(["run-a"], 1, {
-          delivered: false,
-          path: "none",
-          error: "requester settle wake deferred too many times",
+          delivered: true,
+          path: "direct",
         });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("delivers a yielded batch whose grandchild delivery never settles", async () => {
+      // A grandchild ended but its own delivery stays pending (its parent run
+      // died on a provider limit): no descendant is active, the wave is drained.
+      const yieldWake = () => ({
+        status: "pending" as const,
+        attemptCount: 0,
+        batchRunIds: ["run-a", "run-b"],
+        requesterYieldBatch: true as const,
+        rearmGeneration: 1,
+      });
+      const first = makeSettledChild({
+        runId: "run-a",
+        delivery: { status: "pending" },
+        requesterSettleWake: yieldWake(),
+      });
+      const second = makeSettledChild({
+        runId: "run-b",
+        delivery: { status: "pending" },
+        requesterSettleWake: yieldWake(),
+      });
+      registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue([first, second]);
+      readDescendantFacts.mockResolvedValue({ unsettled: true, active: 0 });
+
+      vi.useFakeTimers();
+      vi.setSystemTime(0);
+      try {
+        for (let recheck = 0; recheck < 9; recheck += 1) {
+          await expect(
+            maybeWakeRequesterAfterAllChildrenSettled(wakeParams({ settledEntry: second })),
+          ).resolves.toBe(false);
+          await vi.advanceTimersByTimeAsync(30_000);
+        }
+        expect(first.requesterSettleWake?.deferralCount).toBe(9);
         expect(deliverSpy).not.toHaveBeenCalled();
+        expect(completeBatchSpy).not.toHaveBeenCalled();
+
+        await expect(
+          maybeWakeRequesterAfterAllChildrenSettled(wakeParams({ settledEntry: second })),
+        ).resolves.toBe(true);
+        expect(deliverSpy).toHaveBeenCalledOnce();
+        expect(completeBatchSpy).toHaveBeenCalledOnce();
+        expect(completeBatchSpy).toHaveBeenCalledWith(["run-a", "run-b"], 1, {
+          delivered: true,
+          path: "direct",
+        });
       } finally {
         vi.useRealTimers();
       }
